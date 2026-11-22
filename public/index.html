@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#040508">
+  <title>TokenStat · AI 用量遥测舱</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <div class="aurora" aria-hidden="true"></div>
+
+    <header class="header">
+      <div class="header-inner">
+        <a class="brand" href="#overview" aria-label="TokenStat 用量总览">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="13" width="4" height="8" rx="1.5" fill="currentColor" opacity="0.45"/>
+              <rect x="10" y="8" width="4" height="13" rx="1.5" fill="currentColor" opacity="0.72"/>
+              <rect x="17" y="3" width="4" height="18" rx="1.5" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="brand-name">TokenStat</span>
+          <span class="live-pill" id="local-status" role="status" title="本地服务状态">
+            <i aria-hidden="true"></i>
+            <span>本地</span>
+          </span>
+        </a>
+
+        <nav class="topnav" aria-label="主导航">
+          <a href="#overview" data-page="overview" aria-current="page">
+            <span class="nav-icon" data-icon="grid"></span>
+            <span>总览</span>
+          </a>
+          <a href="#daily" data-page="daily">
+            <span class="nav-icon" data-icon="calendar"></span>
+            <span>每日</span>
+          </a>
+          <a href="#sources" data-page="sources">
+            <span class="nav-icon" data-icon="database"></span>
+            <span>来源</span>
+          </a>
+          <a href="#import" data-page="import">
+            <span class="nav-icon" data-icon="upload"></span>
+            <span>导入</span>
+          </a>
+        </nav>
+
+        <div class="header-actions">
+          <button class="cmd-trigger" id="cmd-trigger" type="button" title="打开命令面板 (Ctrl+K / ⌘K)">
+            <span class="btn-icon" data-icon="search"></span>
+            <span class="cmd-trigger-text">命令</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <button class="ghost-pill demo-toggle" id="demo-toggle" type="button" aria-pressed="false" title="切换示例数据预览">
+            <span class="btn-icon" data-icon="flask"></span>
+            <span>示例</span>
+          </button>
+          <button class="icon-pill" id="theme-toggle" type="button" aria-label="切换浅色或深色主题" title="切换明暗主题">
+            <span class="btn-icon" id="theme-icon" data-icon="sun"></span>
+          </button>
+          <button class="primary-pill sync-button" type="button" aria-label="同步本地日志" title="同步本地日志 (快捷键 R)">
+            <span class="btn-icon sync-spin" data-icon="refresh"></span>
+            <span>同步</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="banner banner-demo" id="demo-notice" hidden>
+        <span class="btn-icon" data-icon="flask"></span>
+        <span>正在预览<strong>示例数据</strong>，不会影响你的本地真实记录。</span>
+        <button class="banner-action" id="exit-demo" type="button">返回真实数据</button>
+      </div>
+      <div class="banner banner-error" id="load-error" hidden>
+        <span class="btn-icon" data-icon="alert"></span>
+        <span id="load-error-text"></span>
+        <button class="banner-action sync-button" type="button">重试</button>
+      </div>
+
+      <!-- OVERVIEW PAGE -->
+      <section id="page-overview" class="page" aria-labelledby="overview-heading">
+        <div class="hero-card holo-border">
+          <div class="hero-top">
+            <div class="hero-heading">
+              <div class="hero-eyebrow-row">
+                <span class="eyebrow" id="overview-caption">正在读取本地用量…</span>
+                <span class="live-tag" id="hero-peak-tag" hidden></span>
+              </div>
+              <h1 id="overview-heading" class="sr-only">用量总览</h1>
+              <div class="hero-number-row">
+                <strong class="hero-number" id="hero-total">—</strong>
+                <span class="hero-unit">Tokens</span>
+                <div class="hero-spark-wrap" aria-hidden="true">
+                  <canvas id="hero-sparkline"></canvas>
+                </div>
+              </div>
+              <div class="hero-subline" id="hero-subline"></div>
+            </div>
+
+            <div class="hero-right">
+              <div class="segmented" id="range-controls" aria-label="统计周期">
+                <button type="button" data-range="7" aria-pressed="false">7D</button>
+                <button type="button" data-range="30" aria-pressed="true">30D</button>
+                <button type="button" data-range="90" aria-pressed="false">90D</button>
+                <button type="button" data-range="all" aria-pressed="false">ALL</button>
+              </div>
+              <div class="hero-gauges" id="hero-gauges" aria-label="效率仪表"></div>
+            </div>
+          </div>
+
+          <div class="telemetry-strip telemetry-4" id="overview-metrics" aria-label="核心指标"></div>
+        </div>
+
+        <article class="card chart-card">
+          <div class="card-head">
+            <div>
+              <h2>用量趋势</h2>
+              <p id="trend-caption">按工具统计每日 Token 消耗</p>
+            </div>
+            <div class="card-controls">
+              <div class="segmented" id="chart-style-controls" aria-label="图表样式">
+                <button type="button" data-style="area" aria-pressed="true">面积</button>
+                <button type="button" data-style="bar" aria-pressed="false">柱状</button>
+                <button type="button" data-style="line" aria-pressed="false">折线</button>
+              </div>
+              <div class="segmented" id="trend-mode-controls" aria-label="统计维度">
+                <button type="button" data-mode="provider" aria-pressed="true">按工具</button>
+                <button type="button" data-mode="io" aria-pressed="false">输入 / 输出</button>
+              </div>
+            </div>
+          </div>
+          <div class="chart-toolbar">
+            <div class="legend" id="chart-legend" role="group" aria-label="系列筛选"></div>
+            <div class="chart-toolbar-right">
+              <span class="meta-pill" id="trend-avg" hidden></span>
+              <div class="pager" id="trend-navigation" hidden>
+                <button class="pager-btn" type="button" id="trend-older" aria-label="较早日期"><span class="btn-icon" data-icon="chevron-left"></span></button>
+                <button class="pager-btn" type="button" id="trend-newer" aria-label="较新日期"><span class="btn-icon" data-icon="chevron-right"></span></button>
+              </div>
+            </div>
+          </div>
+          <div class="trend-plot" id="trend-plot">
+            <canvas id="trend-canvas" role="img" aria-label="每日 Token 用量趋势图"></canvas>
+            <div class="chart-empty" id="chart-empty" hidden>
+              <span class="empty-icon" data-icon="chart"></span>
+              <strong id="chart-empty-title"></strong>
+              <span id="chart-empty-detail"></span>
+            </div>
+            <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+          </div>
+          <div class="card-foot">
+            <span id="trend-update"></span>
+            <a class="inline-link" href="#daily">查看每日明细 <span class="btn-icon" data-icon="arrow-right"></span></a>
+          </div>
+        </article>
+
+        <div class="bento-three">
+          <article class="card split-card">
+            <div class="card-head">
+              <div>
+                <h2>工具占比</h2>
+                <p>悬停切片或列表查看详情</p>
+              </div>
+            </div>
+            <div class="donut-stage">
+              <div class="donut" id="donut-wrap">
+                <canvas id="donut-canvas" role="img" aria-label="各工具占比环形图"></canvas>
+                <div class="donut-label">
+                  <strong id="donut-total">—</strong>
+                  <span id="donut-sub">总 Token</span>
+                </div>
+              </div>
+            </div>
+            <div class="distribution" id="distribution"></div>
+          </article>
+
+          <article class="card leaderboard-card">
+            <div class="card-head">
+              <div>
+                <h2>模型消耗排行</h2>
+                <p>当前周期消耗最高的 AI 模型</p>
+              </div>
+              <span class="meta-pill meta-pill-subtle" id="model-count-pill">0 模型</span>
+            </div>
+            <div class="leaderboard-list" id="model-leaderboard"></div>
+          </article>
+
+          <article class="card rhythm-card">
+            <div class="card-head">
+              <div>
+                <h2>星期节律</h2>
+                <p id="rhythm-caption">周一至周日的日均消耗分布</p>
+              </div>
+            </div>
+            <div class="rhythm-bars" id="rhythm-bars"></div>
+            <div class="card-foot">
+              <span id="rhythm-peak">—</span>
+              <span class="rhythm-hint">按当前周期统计</span>
+            </div>
+          </article>
+        </div>
+
+        <article class="card heatmap-card">
+          <div class="card-head">
+            <div>
+              <h2>24 周活跃热力矩阵</h2>
+              <p id="heatmap-caption">悬停查看单日消耗，点击任意方格直达当天明细</p>
+            </div>
+            <div class="heatmap-scale" aria-hidden="true">
+              <span>少</span>
+              <i class="hm-cell hm-0"></i>
+              <i class="hm-cell hm-1"></i>
+              <i class="hm-cell hm-2"></i>
+              <i class="hm-cell hm-3"></i>
+              <i class="hm-cell hm-4"></i>
+              <span>多</span>
+            </div>
+          </div>
+          <div class="heatmap-scroll">
+            <div class="heatmap-grid" id="heatmap-grid" role="grid" aria-label="每日活跃热力图"></div>
+          </div>
+          <div class="card-foot">
+            <span id="heatmap-summary"></span>
+            <span class="heatmap-hover-info" id="heatmap-hover">悬停方格查看当日用量</span>
+          </div>
+        </article>
+
+        <article class="card table-card">
+          <div class="card-head">
+            <div>
+              <h2>工具与模型明细</h2>
+              <p>点击任意工具行展开模型级用量</p>
+            </div>
+            <div class="card-controls">
+              <div class="search-box">
+                <span class="btn-icon" data-icon="search"></span>
+                <input type="search" id="table-search" placeholder="筛选模型或工具…" aria-label="筛选模型或工具">
+              </div>
+              <button class="ghost-btn" id="toggle-expand-all" type="button">展开全部</button>
+              <button class="outline-btn export-button" type="button" data-export="overview">
+                <span class="btn-icon" data-icon="download"></span>
+                <span>导出 CSV</span>
+              </button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">AI 工具 / 模型</th>
+                  <th scope="col">来源</th>
+                  <th scope="col" class="num-col">输入</th>
+                  <th scope="col" class="num-col">输出</th>
+                  <th scope="col" class="num-col">总 Token</th>
+                  <th scope="col" class="share-col">占比</th>
+                  <th scope="col" class="row-end"><span class="sr-only">展开</span></th>
+                </tr>
+              </thead>
+              <tbody id="provider-table"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- DAILY PAGE -->
+      <section id="page-daily" class="page" aria-labelledby="daily-heading" hidden>
+        <div class="hero-card holo-border daily-hero">
+          <div class="hero-top">
+            <div class="hero-heading">
+              <span class="eyebrow" id="daily-caption">每日记录</span>
+              <h1 id="daily-heading" class="daily-date-title">—</h1>
+              <div class="hero-subline" id="daily-summary-caption"></div>
+            </div>
+            <div class="hero-controls date-controls">
+              <div class="date-stepper">
+                <button class="pager-btn" type="button" id="day-prev" aria-label="前一天" title="前一天 (快捷键 [)">
+                  <span class="btn-icon" data-icon="chevron-left"></span>
+                </button>
+                <input id="day-picker" type="date" aria-label="选择日期">
+                <button class="pager-btn" type="button" id="day-next" aria-label="后一天" title="后一天 (快捷键 ])">
+                  <span class="btn-icon" data-icon="chevron-right"></span>
+                </button>
+              </div>
+              <button class="outline-btn" type="button" id="today-button">今天</button>
+            </div>
+          </div>
+
+          <div class="telemetry-strip telemetry-4" id="daily-metrics" aria-label="当日核心指标"></div>
+
+          <div class="daily-comp-wrap" id="daily-composition" hidden>
+            <div class="composition-bar" id="daily-composition-bar" role="img" aria-label="当日各工具比例"></div>
+            <div class="composition-legend" id="daily-composition-legend"></div>
+          </div>
+        </div>
+
+        <article class="card table-card">
+          <div class="card-head">
+            <div>
+              <h2>当天模型明细</h2>
+              <p>按工具分组展示完整 Token 口径（输入、输出、缓存与推理）</p>
+            </div>
+            <button class="outline-btn export-button" type="button" data-export="daily">
+              <span class="btn-icon" data-icon="download"></span>
+              <span>导出当天</span>
+            </button>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">工具 / 模型</th>
+                  <th scope="col" class="num-col">输入</th>
+                  <th scope="col" class="num-col">输出</th>
+                  <th scope="col" class="num-col">缓存</th>
+                  <th scope="col" class="num-col">推理</th>
+                  <th scope="col" class="num-col">总 Token</th>
+                  <th scope="col" class="num-col">费用（USD）</th>
+                </tr>
+              </thead>
+              <tbody id="daily-table"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <div id="day-insights">
+          <div class="bento-two insight-grid">
+            <article class="card">
+              <div class="card-head"><div><h2>24 小时分布</h2><p id="hourly-note"></p></div></div>
+              <div id="hourly-chart" class="hourly-chart" aria-label="当天按小时统计的 Token 用量"></div>
+            </article>
+            <article class="card">
+              <div class="card-head"><div><h2>API 等值估算</h2><p>公开标准费率和自定义单价</p></div>
+                <a class="inline-link" href="#sources/pricing">配置单价</a>
+              </div>
+              <dl class="cost-metrics"><div><dt>估算费用</dt><dd id="estimated-cost">—</dd></div><div><dt>缓存净节省</dt><dd id="cache-savings">—</dd></div><div id="reported-cost-group" hidden><dt>日志记录费用</dt><dd id="reported-cost">—</dd></div></dl>
+              <p class="insight-note" id="pricing-coverage"></p>
+              <details class="cost-breakdown" id="cost-breakdown" hidden>
+                <summary>费用组成</summary>
+                <dl id="cost-breakdown-values"></dl>
+              </details>
+            </article>
+          </div>
+          <article class="card table-card">
+            <div class="card-head"><div><h2>会话 Token 排行</h2><p>当天用量最高的 15 个会话</p></div></div>
+            <div class="table-scroll"><table>
+              <thead><tr><th scope="col">工具</th><th scope="col">会话</th><th scope="col">当天活动时段</th><th scope="col" class="num-col">总 Token</th></tr></thead>
+              <tbody id="session-table"></tbody>
+            </table></div>
+          </article>
+        </div>
+
+        <article class="card table-card">
+          <div class="card-head">
+            <div>
+              <h2>按日汇总</h2>
+              <p id="history-caption">点击任意一行快速切换当天明细</p>
+            </div>
+            <div class="pager">
+              <button class="pager-btn" type="button" id="history-newer" aria-label="较新日期"><span class="btn-icon" data-icon="chevron-left"></span></button>
+              <span id="history-page" class="page-indicator"></span>
+              <button class="pager-btn" type="button" id="history-older" aria-label="较早日期"><span class="btn-icon" data-icon="chevron-right"></span></button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="history-table">
+              <thead id="history-head"></thead>
+              <tbody id="history-table"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- SOURCES PAGE -->
+      <section id="page-sources" class="page" aria-labelledby="sources-heading" hidden>
+        <header class="section-header">
+          <div>
+            <span class="eyebrow">LOCAL COLLECTORS</span>
+            <h1 id="sources-heading">数据来源</h1>
+            <p>自动从本机 AI 工具日志目录提取用量统计，所有解析均在本地完成。</p>
+          </div>
+          <button class="primary-pill sync-button" type="button">
+            <span class="btn-icon sync-spin" data-icon="refresh"></span>
+            <span>重新扫描</span>
+          </button>
+        </header>
+
+        <section class="card desktop-preferences" id="desktop-preferences" aria-labelledby="desktop-heading" hidden>
+          <div>
+            <h2 id="desktop-heading">桌面设置</h2>
+            <p>关闭窗口后继续在托盘统计。使用托盘菜单打开或退出。</p>
+          </div>
+          <div class="desktop-startup">
+            <label><input id="desktop-autostart" type="checkbox" role="switch" disabled> 开机自启动</label>
+            <p id="desktop-autostart-status" role="status"></p>
+          </div>
+        </section>
+
+        <details class="card sync-card" id="sync-card">
+          <summary><strong>跨设备同步</strong><span id="sync-state">未启用</span></summary>
+          <div class="sync-body">
+            <p class="insight-note">在各设备上选择同一个共享文件夹并使用同一密钥。TokenStat 将用量统计加密后写入该文件夹。</p>
+            <form id="sync-form" autocomplete="off">
+              <div class="sync-fields">
+                <label>设备名称<input class="field-input" name="deviceName" maxlength="60" placeholder="例如 工作电脑"></label>
+                <label>同步文件夹<span class="sync-folder-control"><input class="field-input" name="folder" maxlength="4096" placeholder="本机上的共享文件夹路径" required><button class="outline-btn" id="choose-sync-folder" type="button" hidden>浏览</button></span></label>
+                <label class="sync-key-field">同步密钥<input class="field-input" type="password" name="key" spellcheck="false" maxlength="128" placeholder="第一台设备留空生成，其他设备粘贴已有密钥"></label>
+              </div>
+              <div class="form-actions">
+                <button class="outline-btn" id="save-sync" type="submit">启用并同步</button>
+                <button class="ghost-btn" id="run-sync" type="button" hidden>立即同步</button>
+                <button class="ghost-btn" id="reveal-sync-key" type="button" hidden>查看密钥</button>
+                <button class="ghost-btn" id="disable-sync" type="button" hidden>暂停同步</button>
+              </div>
+            </form>
+            <div class="sync-pairing" id="sync-pairing" hidden>
+              <label for="sync-pairing-key">配对密钥</label><input class="field-input" id="sync-pairing-key" readonly spellcheck="false">
+              <button class="outline-btn" id="copy-sync-key" type="button">复制密钥</button>
+              <button class="ghost-btn" id="hide-sync-key" type="button">隐藏</button>
+            </div>
+            <p class="insight-note" id="sync-note" role="status"></p>
+            <div class="table-scroll sync-peers" id="sync-peer-list" hidden><table>
+              <thead><tr><th scope="col">已同步设备</th><th scope="col">最近接收</th><th scope="col" class="num-col">记录数</th></tr></thead>
+              <tbody id="sync-peers"></tbody>
+            </table></div>
+          </div>
+        </details>
+
+        <div class="source-grid" id="source-grid"></div>
+
+        <details class="card pricing-card" id="pricing-card">
+          <summary><strong>模型单价</strong><span>美元 / 百万 Token</span></summary>
+          <div class="pricing-body">
+            <p id="pricing-basis" class="insight-note"></p>
+            <form id="price-form">
+              <div class="price-identity">
+                <label>工具<select name="provider" class="field-input" required></select></label>
+                <label>日志模型 ID<input class="field-input" name="model" required maxlength="512" spellcheck="false" autocomplete="off"></label>
+              </div>
+              <div class="price-fields">
+                <label>输入<input class="field-input" name="input" type="number" min="0" max="1000000" step="any" required></label>
+                <label>缓存读取<input class="field-input" name="cached" type="number" min="0" max="1000000" step="any"></label>
+                <label>缓存写入<input class="field-input" name="cacheWrite" type="number" min="0" max="1000000" step="any"></label>
+                <label>输出<input class="field-input" name="output" type="number" min="0" max="1000000" step="any" required></label>
+                <label>推理<input class="field-input" name="reasoning" type="number" min="0" max="1000000" step="any" placeholder="沿用输出"></label>
+              </div>
+              <div class="form-actions"><button class="outline-btn" type="submit">保存单价</button><span id="price-result" role="status"></span></div>
+            </form>
+            <div class="table-scroll"><table>
+              <thead><tr><th scope="col">工具 / 模型</th><th scope="col" class="num-col">输入</th><th scope="col" class="num-col">缓存读取</th><th scope="col" class="num-col">缓存写入</th><th scope="col" class="num-col">输出</th><th scope="col" class="num-col">推理</th><th scope="col">费率</th></tr></thead>
+              <tbody id="price-table"></tbody>
+            </table></div>
+          </div>
+        </details>
+
+        <div class="callout">
+          <span class="btn-icon" data-icon="database"></span>
+          <span>网页聊天（如 ChatGPT / Claude Web）或云端账号的用量请先导出文件，再通过<a href="#import">导入记录</a>合并。</span>
+          <a class="inline-link" href="#import">前往导入 <span class="btn-icon" data-icon="arrow-right"></span></a>
+        </div>
+      </section>
+
+      <!-- IMPORT PAGE -->
+      <section id="page-import" class="page" aria-labelledby="import-heading" hidden>
+        <header class="section-header">
+          <div>
+            <span class="eyebrow">DATA IMPORT</span>
+            <h1 id="import-heading">导入记录</h1>
+            <p>预览 CSV、JSON 或 JSONL 中的用量、工具归属和重复记录，再确认导入。</p>
+          </div>
+          <button class="outline-btn" id="template-button" type="button">
+            <span class="btn-icon" data-icon="download"></span>
+            <span>下载 CSV 模板</span>
+          </button>
+        </header>
+
+        <div class="import-layout">
+          <article class="card import-card">
+            <div class="card-head">
+              <div>
+                <h2>上传文件</h2>
+                <p>支持 OpenAI / xAI / Anthropic / Gemini 原始 usage 格式</p>
+              </div>
+            </div>
+            <div class="import-body">
+              <div class="field-group">
+                <label class="field-label" for="import-provider">归属 AI 工具</label>
+                <div class="provider-pills" id="import-provider-pills" role="radiogroup" aria-label="选择归属 AI 工具"></div>
+                <select class="sr-only" id="import-provider">
+                  <option value="auto">自动识别</option>
+                  <option value="codex">Codex</option>
+                  <option value="gemini">Antigravity</option>
+                  <option value="grok">Grok</option>
+                  <option value="claude">Claude Code</option>
+                  <option value="gemini-cli">Gemini CLI</option>
+                  <option value="cline">Cline</option>
+                  <option value="roo">Roo Code</option>
+                  <option value="other">其他</option>
+                </select>
+              </div>
+
+              <div class="dropzone" id="dropzone">
+                <span class="upload-badge" data-icon="upload"></span>
+                <strong>拖入用量文件</strong>
+                <span class="dropzone-sub">CSV、JSON、JSONL、NDJSON · 每个文件最多 8 MB</span>
+                <button class="primary-pill" id="choose-file" type="button">选择本地文件</button>
+                <input class="sr-only" type="file" id="file-picker" accept=".csv,.json,.jsonl,.ndjson,text/csv,application/json" tabindex="-1">
+              </div>
+
+              <p class="import-result" id="import-result" role="status" hidden></p>
+              <div id="import-preview" class="import-preview" hidden>
+                <ul id="import-models" aria-label="识别到的工具和模型"></ul>
+                <div class="form-actions"><button class="primary-pill" id="confirm-import" type="button">确认导入</button><button class="ghost-btn" id="cancel-import" type="button">取消</button></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card format-card">
+            <div class="card-head">
+              <div>
+                <h2>格式说明</h2>
+                <p>UTF-8 编码，表头保留英文</p>
+              </div>
+            </div>
+            <div class="format-body">
+              <div class="code-block">
+                <span class="code-label">CSV 示例</span>
+                <pre><code>date,provider,model,input,output,cached,reasoning,total
+2026-11-21,gemini,gemini-2.5-pro,1200,240,300,60,1500
+2026-11-21,grok,grok-4,1750,280,420,30,2030</code></pre>
+              </div>
+              <div class="code-block">
+                <span class="code-label">JSON 示例（兼容 API usage）</span>
+                <pre><code>[
+  {
+    "date": "2026-11-21T10:30:00+08:00",
+    "provider": "grok",
+    "model": "grok-4",
+    "usage": {"prompt_tokens": 1750, "completion_tokens": 280, "total_tokens": 2030}
+  }
+]</code></pre>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <article class="card table-card">
+          <div class="card-head">
+            <div>
+              <h2>导入历史</h2>
+              <p>最近 100 次成功导入</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">文件名</th>
+                  <th scope="col">导入时间</th>
+                  <th scope="col" class="num-col">新增记录</th>
+                  <th scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody id="import-table"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <footer class="footer">
+        <span class="footer-left">
+          <span class="btn-icon" data-icon="shield"></span>
+          <span>TokenStat · 按 ⌘K 打开命令面板 · 纯本地运行</span>
+        </span>
+        <span id="time-zone"></span>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Raycast / Linear Style Command Palette -->
+  <div class="cmd-backdrop" id="cmd-modal" hidden>
+    <div class="cmd-dialog" role="dialog" aria-modal="true" aria-label="快捷命令面板">
+      <div class="cmd-input-row">
+        <span class="btn-icon" data-icon="search"></span>
+        <input type="text" id="cmd-input" placeholder="输入命令、页面、模型或日期…" autocomplete="off" spellcheck="false">
+        <kbd>ESC</kbd>
+      </div>
+      <div class="cmd-list" id="cmd-list" role="listbox"></div>
+      <div class="cmd-footer">
+        <span><kbd>↑</kbd> <kbd>↓</kbd> 选择</span>
+        <span><kbd>↵</kbd> 执行</span>
+        <span><kbd>ESC</kbd> 关闭</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

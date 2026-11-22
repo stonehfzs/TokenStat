@@ -1,0 +1,68 @@
+{
+  "name": "tokenstat",
+  "version": "1.4.0",
+  "private": true,
+  "description": "Local token usage dashboard for AI tools.",
+  "productName": "TokenStat",
+  "desktopName": "app.tokenstat.desktop",
+  "type": "module",
+  "main": "desktop/main.mjs",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "desktop": "electron .",
+    "pack": "electron-builder --dir --publish never",
+    "dist": "electron-builder --publish never",
+    "dist:win": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "^45.4.1",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "app.tokenstat.desktop",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "buildResources": "desktop",
+      "output": "dist"
+    },
+    "files": [
+      "server.mjs",
+      "lib/**",
+      "public/**",
+      "desktop/*.mjs",
+      "desktop/*.cjs",
+      "desktop/icon.png"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "desktop/icon.png",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-${arch}-Setup.${ext}",
+      "oneClick": true,
+      "perMachine": false,
+      "packElevateHelper": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "en_US",
+        "zh_CN"
+      ],
+      "include": "desktop/installer.nsh"
+    },
+    "linux": {
+      "category": "Utility",
+      "syncDesktopName": true,
+      "target": "AppImage"
+    }
+  }
+}

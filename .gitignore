@@ -1,0 +1,29 @@
+# Local data and private configuration
+.tokenstat
+.aws
+.codex
+.agents
+.env
+.env.*
+.envrc
+*.env
+usage.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+TokenStat-sync/
+*.snapshot
+*.log
+
+# Build output and source bundles
+node_modules/
+dist/
+*.tgz
+*.tbz2
+*.txz
+*.tzst
+*.tar
+*.tar.*
