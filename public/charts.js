@@ -1,4 +1,5 @@
-const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+import { t as translateText, tr as translateTemplate } from './js/i18n.js';
+const weekdays = [translateText('周日'), translateText('周一'), translateText('周二'), translateText('周三'), translateText('周四'), translateText('周五'), translateText('周六')];
 
 function themeColors() {
   const styles = getComputedStyle(document.documentElement);
@@ -52,7 +53,7 @@ function ceiling(value) {
 
 function shortDateWithDay(date) {
   const day = weekdays[new Date(`${date}T00:00:00Z`).getUTCDay()];
-  return `${Number(date.slice(5, 7))} 月 ${Number(date.slice(8, 10))} 日 · ${day}`;
+  return translateTemplate`${Number(date.slice(5, 7))} 月 ${Number(date.slice(8, 10))} 日 · ${day}`;
 }
 
 function traceSmoothCurve(ctx, points) {
@@ -209,7 +210,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
       const peakVal = buckets[peakIdx].total;
       const px = left + (peakIdx + 0.5) * slot;
       const py = bottom - (peakVal / max) * plotHeight;
-      const label = `峰值 ${compact(peakVal)}`;
+      const label = translateTemplate`峰值 ${compact(peakVal)}`;
       context.save();
       context.font = '600 10px "Inter", system-ui, sans-serif';
       const tw = context.measureText(label).width + 12;
@@ -479,7 +480,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
     const totalRow = document.createElement('div');
     totalRow.className = 'tt-row tt-total';
     const totalKey = document.createElement('span');
-    totalKey.textContent = '总计';
+    totalKey.textContent = translateText('总计');
     const totalVal = document.createElement('span');
     totalVal.className = 'tt-val';
     totalVal.textContent = full(bucket.total);
@@ -489,7 +490,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
     if (bucket.total > 0) {
       const hint = document.createElement('div');
       hint.className = 'tt-hint';
-      hint.textContent = '点击查看当日明细 →';
+      hint.textContent = translateText('点击查看当日明细 →');
       tooltip.append(hint);
     }
 

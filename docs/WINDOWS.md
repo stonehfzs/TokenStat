@@ -2,7 +2,7 @@
 
 ## 安装与日常使用
 
-在 x64 版 Windows 10 或更新版本上运行 `TokenStat-1.4.0-x64-Setup.exe`。安装面向当前 Windows 用户，无需管理员权限，也无需另装 Node.js。安装完成后可从「开始」菜单打开 TokenStat。此构建没有 Authenticode 签名，Windows 可能显示发布者未知。
+在 x64 版 Windows 10 或更新版本上运行 `TokenStat-1.5.0-x64-Setup.exe`。安装面向当前 Windows 用户，无需管理员权限，也无需另装 Node.js。安装完成后可从「开始」菜单打开 TokenStat。此构建没有 Authenticode 签名，Windows 可能显示发布者未知。
 
 关闭窗口会释放界面，系统托盘继续显示 TokenStat 并在后台采集本机日志。选择托盘菜单中的「打开 TokenStat」可恢复界面。若 Windows 把图标收进折叠菜单，先点任务栏上的 `^`。要停止后台运行，请从托盘选择「退出 TokenStat」。
 

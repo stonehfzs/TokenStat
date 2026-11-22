@@ -1,17 +1,29 @@
-import { once } from 'node:events';
 import { parentPort, workerData } from 'node:worker_threads';
 import { startServer } from '../server.mjs';
+import { createDesktopBridge } from './bridge.mjs';
 
-const backend = await startServer({ port: 0, dataDir: workerData.dataDir });
-const closing = once(parentPort, 'message');
-parentPort.postMessage({ url: backend.url });
+const bridge = createDesktopBridge(parentPort);
+const closing = Promise.withResolvers();
+function onClose(message) {
+  if (message?.type === 'close') closing.resolve();
+}
+parentPort.on('message', onClose);
+let backend;
 try {
-  const [command] = await closing;
-  if (command !== 'close') throw new Error('后台服务收到无效指令。');
+  backend = await startServer({
+    port: 0,
+    dataDir: workerData.dataDir,
+    syncVault: bridge.syncVault,
+    notifyBudget: bridge.notifyBudget,
+  });
+  parentPort.postMessage({ type: 'ready', url: backend.url });
+  await closing.promise;
 } finally {
   try {
-    await backend.close();
+    await backend?.close();
   } finally {
+    bridge.close();
+    parentPort.off('message', onClose);
     parentPort.close();
   }
 }

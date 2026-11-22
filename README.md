@@ -1,5 +1,7 @@
 # TokenStat
 
+[English](README.en.md)
+
 TokenStat 是一个在本机运行的 AI Token 用量面板，支持 Windows、macOS 和 Linux。可以筛选趋势图中的工具和时间范围，按日查看模型明细，比较输入、输出、缓存与推理 Token，也可以导出 CSV。
 
 [下载 Windows 和 Linux 桌面版](https://github.com/stonehfzs/TokenStat/releases/latest)
@@ -29,7 +31,7 @@ npm start
 
 ## 数据来源
 
-有效日志发生变化后，面板自动更新。监听事件合并后仅处理变化的日志，另有 60 秒间隔的目录检查作为兜底。使用自定义日志位置时，在数据来源设置中填写日志目录或文件路径。
+有效日志发生变化后，面板自动更新。监听事件合并后仅处理变化的日志，监听正常时每 5 分钟复查目录，监听不可用时每 60 秒复查。使用自定义日志位置时，在数据来源设置中填写日志目录或文件路径。
 
 | 工具 | 本地自动采集 |
 | --- | --- |
@@ -76,6 +78,8 @@ date,provider,model,input,output,cached,reasoning,total
 
 在「每日」可查看各模型的 API 等值估算、计价覆盖率，以及普通输入、缓存读写、输出和已记录推理的费用组成。在「来源 → 模型单价」可按工具和完整模型 ID 覆盖固定费率，单位为每百万 Token 的美元价格。推理单价留空时沿用输出单价。缓存净节省按同一上下文档位的普通输入费率比较缓存读写费用。
 
+公开价目表支持已核对的供应商前缀和模型版本。用量明细保留日志中的完整模型 ID。在「来源 → 偏好与预算」可切换中文或英文，也可填写自定义汇率并切换 USD 或 CNY 显示。自定义单价和金额预算仍使用 USD。
+
 内置单价采用 2026 年 11 月 22 日核对的公开标准 API 文本费率。支持的长上下文模型按每次请求的输入量判断档位，再按日汇总。OpenAI GPT-6.2 Sol 的长上下文档位适用于超过 272,000 个输入 Token 的单次请求。审核路由、缺少请求级数据的分档模型，以及需要缓存写入期限等信息的记录会影响估算覆盖率。实际支付金额还取决于订阅、免费额度、所选服务、区域和工具调用。 [OpenAI 定价](https://developers.openai.com/api/docs/pricing) · [Gemini 定价](https://aistudio.google.com/docs/pricing) · [Anthropic 定价](https://platform.claude.com/docs/en/about-claude/pricing) · [xAI 定价](https://docs.x.ai/developers/pricing)
 
 Grok Build 日志明确记录的费用单独显示，按来源的 ticks 换算为美元。此金额与公开 API 等值估算分别展示。 [Grok Build 用量说明](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md)
@@ -110,9 +114,11 @@ npm run desktop
 | macOS | `.dmg` 磁盘映像 |
 | Linux | `.AppImage` 便携程序 |
 
-安装包内含 Electron 运行时。Linux 可先对 AppImage 执行 `chmod +x` 再运行。缺少 FUSE 时可用 `NO_CLEANUP=1 ./TokenStat-1.4.0-x86_64.AppImage --appimage-extract-and-run` 启动，重复启动会复用解包缓存。面向他人分发时，按平台要求配置代码签名，macOS 还需要公证。[Windows 安装与登录启动](docs/WINDOWS.md) · [跨平台打包文档](https://www.electron.build/v26/docs/features/multi-platform-build/) · [AppImage 的 FUSE 兼容方式](https://docs.appimage.org/user-guide/troubleshooting/fuse.html)
+安装包内含 Electron 运行时。Linux 可先对 AppImage 执行 `chmod +x` 再运行。缺少 FUSE 时可用 `NO_CLEANUP=1 ./TokenStat-1.5.0-x86_64.AppImage --appimage-extract-and-run` 启动，重复启动会复用解包缓存。面向他人分发时，按平台要求配置代码签名，macOS 还需要公证。[Windows 安装与登录启动](docs/WINDOWS.md) · [跨平台打包文档](https://www.electron.build/v26/docs/features/multi-platform-build/) · [AppImage 的 FUSE 兼容方式](https://docs.appimage.org/user-guide/troubleshooting/fuse.html)
 
-桌面窗口关闭后会释放界面进程，系统托盘保留 TokenStat，后台继续监听日志。点击托盘图标或选择「打开 TokenStat」可恢复窗口。需要停止后台采集时，选择「退出 TokenStat」。
+桌面窗口关闭后会释放界面进程，系统托盘保留 TokenStat，后台继续监听日志。托盘菜单显示今日 Token 和可估算费用，并提供立即同步。选择「打开 TokenStat」会恢复上次的窗口位置、大小和最大化状态。需要停止后台采集时，选择「退出 TokenStat」。
+
+「来源 → 偏好与预算」支持每日和每月的 Token 与 API 等值费用预算。同一周期内每个 80% 和 100% 档位提醒一次。金额提醒使用已计价用量。macOS 桌面应用需要代码签名才能显示原生通知。
 
 开机自启动默认关闭。可在「来源 → 桌面设置」或托盘菜单切换。开启后，登录桌面时先在托盘运行，可按需打开窗口。Linux AppImage 建议放在固定位置，自启动使用开启时的可执行文件路径。
 
@@ -138,6 +144,14 @@ npm run desktop
 2. 在 Windows 或其他设备安装 TokenStat，选择同一个共享文件夹，把配对密钥粘贴进去并启用同步。已有密钥可以通过「查看密钥」再次读取。
 3. 在设置卡片查看已收到的设备。后台会定期检查共享目录，点击「立即同步」可手动检查。
 
-共享目录可以是两端可访问的局域网共享文件夹，或通过自己的文件同步工具在设备间复制的文件夹。应用写入 AES-256-GCM 加密的设备快照，快照只含用量记录及其必要字段。密钥保存在各设备的本地应用数据中，请只发给需要配对的设备。应用合并设备用量并按记录标识去重。导入撤回会通过后续快照传播。暂停同步会保留已收到的数据。
+共享目录可以是两端可访问的局域网共享文件夹，或通过自己的文件同步工具在设备间复制的文件夹。应用使用 AES-256-GCM，按 UTC 月份写入用量分片。未变更的历史月份可以复用，接收端验证变更分片后再合并。桌面端使用系统密钥库保护配对密钥。浏览器运行模式将密钥保存在本机应用数据中。请只把密钥交给需要配对的设备。
 
-每个同步组最多接收 32 台设备，每台设备的快照最多包含 250,000 条用量记录。离线时保留上次成功合并的用量，文件夹恢复后继续检查。
+合并视图会对相同记录去重，导入撤回也会同步。总览和每日页面可按设备筛选，总览提供最近 30 天设备贡献。可清理已退役设备的本机副本，之后也能恢复接收。暂停或离线期间保留上次合并的用量。新版能读取旧快照，各设备升级至 1.5 后即可彼此接收新版分片。
+
+## 配置备份
+
+在「来源 → 配置备份」导出或恢复 JSON。备份包含自定义路径、单价、偏好和本机导入记录。恢复会合并导入记录并去重。备份排除配对密钥、采集缓存和其他设备数据。
+
+## 开发验证
+
+运行 `npm ci` 后使用 `npm test` 执行定价、导入、采集、同步、桌面逻辑和 API 回归测试。GitHub Actions 在 Linux、Windows 和 macOS 上运行测试并验证本机打包。

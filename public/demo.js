@@ -1,3 +1,4 @@
+import { t as translateText } from './js/i18n.js';
 export function demoUsage(today, offsetDay) {
   const providers = [
     { provider: 'codex', model: 'gpt-5.4', ratio: .55, inputRatio: .84 },
@@ -13,7 +14,7 @@ export function demoUsage(today, offsetDay) {
       const input = Math.round(total * inputRatio);
       const output = total - input;
       return {
-        date, provider, model, total, input, output, source: '示例数据',
+        date, provider, model, total, input, output, source: translateText('示例数据'),
         cached: Math.round(input * (.22 + tool * .1)),
         reasoning: Math.round(output * .24),
         count: 4 + (index + tool) % 10,

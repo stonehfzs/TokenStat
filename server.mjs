@@ -1,23 +1,21 @@
 import { watch } from 'node:fs';
-import { mkdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir, platform } from 'node:os';
-import { join, resolve } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { collectLocal, localLogTargets, localWatchRoots } from './lib/local-sources.mjs';
 import { parseUsageFile } from './lib/imports.mjs';
 import { defaultRates, estimateRows, estimateTotals, normalizeRate, priceIdentity, pricingBasis } from './lib/pricing.mjs';
 import { openStore } from './lib/store.mjs';
 import { createSync } from './lib/sync.mjs';
+import { budgetAlerts, defaultPreferences, displayMoney, normalizePreferences, usagePeriods } from './lib/preferences.mjs';
 
 const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
-const files = new Map([
-  ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
-  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/charts.js', ['charts.js', 'text/javascript; charset=utf-8']],
-  ['/calendar.js', ['calendar.js', 'text/javascript; charset=utf-8']],
-  ['/demo.js', ['demo.js', 'text/javascript; charset=utf-8']],
+const publicTypes = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
 ]);
 
 const localProviders = ['codex', 'gemini', 'grok', 'claude', 'gemini-cli', 'cline', 'roo'];
@@ -25,6 +23,7 @@ const providers = [...localProviders, 'other'];
 const maxBody = 16 * 1024 * 1024;
 const watchDebounce = 750;
 const pollInterval = 60_000;
+const watchedAuditInterval = 300_000;
 const securityHeaders = {
   'Cache-Control': 'no-store',
   'Content-Security-Policy': "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -46,8 +45,8 @@ function userDataDir() {
   return join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'tokenstat');
 }
 
-async function readJson(request) {
-  if (Number(request.headers['content-length']) > maxBody) {
+async function readJson(request, limit = maxBody) {
+  if (Number(request.headers['content-length']) > limit) {
     request.resume();
     throw new RequestError('文件太大，请拆分后导入。', 413);
   }
@@ -55,9 +54,9 @@ async function readJson(request) {
   let bytes = 0;
   for await (const chunk of request) {
     bytes += chunk.length;
-    if (bytes <= maxBody) chunks.push(chunk);
+    if (bytes <= limit) chunks.push(chunk);
   }
-  if (bytes > maxBody) throw new RequestError('文件太大，请拆分后导入。', 413);
+  if (bytes > limit) throw new RequestError('文件太大，请拆分后导入。', 413);
   try {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error();
@@ -70,6 +69,39 @@ async function readJson(request) {
 function send(response, status, value, type = 'application/json; charset=utf-8') {
   response.writeHead(status, { ...securityHeaders, 'Content-Type': type });
   response.end(type.startsWith('application/json') ? JSON.stringify(value) : value);
+}
+
+function requestPath(url) {
+  let path;
+  try { path = decodeURIComponent(url.split('?')[0]); }
+  catch { throw new RequestError('请求地址无效。'); }
+  if (!path.startsWith('/') || /[\\%\x00-\x1f]/u.test(path) || path.split('/').some((part) => part.startsWith('.'))) {
+    throw new RequestError('请求地址无效。', 403);
+  }
+  return path;
+}
+
+async function staticFile(root, path) {
+  const file = path === '/' ? 'index.html' : path.slice(1);
+  const contentType = publicTypes.get(extname(file));
+  if (!contentType || !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$/.test(file)) return null;
+  try {
+    const resolved = await realpath(join(root, file));
+    const within = relative(root, resolved);
+    if (!within || isAbsolute(within) || within.split(sep).some((part) => part.startsWith('.'))
+      || extname(resolved) !== extname(file)) throw new RequestError('请求地址无效。', 403);
+    if (!(await stat(resolved)).isFile()) return null;
+    return { contentType, contents: await readFile(resolved) };
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    throw error;
+  }
+}
+
+function deviceFilter(value) {
+  if (value == null || value === 'all') return undefined;
+  if (value === 'local' || /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(value)) return value;
+  throw new RequestError('设备标识无效。');
 }
 
 function calendarDate(value) {
@@ -89,7 +121,7 @@ function bucketOptions(query) {
   const granularity = query.get('granularity') || 'day';
   if (from && to && from > to) throw new RequestError('开始日期不能晚于结束日期。');
   if (granularity !== 'day' && granularity !== 'week') throw new RequestError('聚合单位应为 day 或 week。');
-  return { from, to, granularity };
+  return { from, to, granularity, device: deviceFilter(query.get('device')) };
 }
 
 function checkedInput(parse) {
@@ -103,11 +135,14 @@ function checkedInput(parse) {
 export async function startServer({
   port = Number(process.env.TOKENSTAT_PORT ?? 4317),
   dataDir = process.env.TOKENSTAT_DATA_DIR || userDataDir(),
+  syncVault,
+  notifyBudget,
 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('TOKENSTAT_PORT 必须是有效的端口。');
   dataDir = resolve(dataDir);
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
 
+  const assetRoot = await realpath(publicDir);
   const store = await openStore(dataDir);
   const subscribers = new Set();
   const watchers = new Map();
@@ -124,12 +159,18 @@ export async function startServer({
   let queuedFileCount = 0;
   let auditQueued = false;
   let stopping = false;
+  let watchDegraded = false;
+  let lastAudit = 0;
+  let scheduledBudget;
+  let pendingBudget;
+  let retryBudgetAfter = 0;
+  let budgetGeneration = 0;
   let cleanup;
   let shutdown;
   let heartbeat;
   let poll;
   let url;
-  const folderSync = createSync(store, { onChange: changed });
+  const folderSync = createSync(store, { onChange: changed, keyVault: syncVault });
 
   function streamWrite(response, frame) {
     if (!response.destroyed && !response.write(frame)) response.destroy();
@@ -139,6 +180,48 @@ export async function startServer({
     views.clear();
     const message = `id: ${++revision}\nevent: usage\ndata: ${JSON.stringify({ revision, syncedAt: status?.syncedAt })}\n\n`;
     for (const response of subscribers) streamWrite(response, message);
+    scheduleBudget();
+  }
+
+  function preferences() {
+    return store.getPreferences() ?? defaultPreferences;
+  }
+
+  function scheduleBudget() {
+    if (!notifyBudget || stopping || scheduledBudget || !budgetAlertsEnabled() || retryBudgetAfter > Date.now()) return;
+    scheduledBudget = setTimeout(() => {
+      scheduledBudget = undefined;
+      if (pendingBudget) { scheduleBudget(); return; }
+      pendingBudget = checkBudget().catch((error) => console.error('[TokenStat] 预算检查失败', error.message))
+        .finally(() => { pendingBudget = undefined; });
+    }, 400).unref();
+  }
+
+  function budgetAlertsEnabled() {
+    return Object.values(preferences().budgets).some(Boolean);
+  }
+
+  async function checkBudget() {
+    const generation = budgetGeneration;
+    const settings = preferences();
+    const period = usagePeriods(settings);
+    const view = (from) => usageView(settings.timeZone, { from, to: period.day, granularity: 'day' });
+    const day = settings.budgets.dailyTokens || settings.budgets.dailyUsd ? view(period.day) : null;
+    const month = settings.budgets.monthlyTokens || settings.budgets.monthlyUsd ? view(period.monthStart) : null;
+    const { alerts } = budgetAlerts(settings, store.getBudgetNoticeState() ?? {}, period, { day, month });
+    for (const { key, mark, title, body } of alerts) {
+      if (stopping || budgetGeneration !== generation) break;
+      if (await notifyBudget({ title, body })) {
+        const current = preferences();
+        const currentPeriod = usagePeriods(current);
+        if (current.budgets[key] === mark.limit && mark.period === (key.startsWith('daily') ? currentPeriod.day : currentPeriod.month)) {
+          store.setBudgetNoticeState({ ...store.getBudgetNoticeState(), [key]: mark });
+        }
+      } else {
+        retryBudgetAfter = Date.now() + 600_000;
+        break;
+      }
+    }
   }
 
   async function runFolderSync() {
@@ -188,6 +271,7 @@ export async function startServer({
     const version = ++watchVersion;
     watchSettings = { paths: store.getPaths() };
     const roots = new Set(localWatchRoots(watchSettings));
+    watchDegraded = false;
     for (const [path, watcher] of watchers) {
       if (!roots.has(path)) {
         watchers.delete(path);
@@ -203,6 +287,7 @@ export async function startServer({
           if (!metadata.isDirectory() || filename) enqueueFile(metadata.isDirectory() ? resolve(path, filename) : path);
         });
         watcher.on('error', () => {
+          watchDegraded = true;
           if (watchers.get(path) === watcher) watchers.delete(path);
           watcher.close();
         });
@@ -213,7 +298,8 @@ export async function startServer({
           }
         });
         watchers.set(path, watcher);
-      } catch {
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error.code)) watchDegraded = true;
         // Missing roots and filesystems without watching support are picked up by the polling path.
       }
     }));
@@ -226,6 +312,7 @@ export async function startServer({
     pendingScan = (async () => {
       do {
         const files = fullQueued || !status ? undefined : queuedFiles;
+        if (!files) lastAudit = Date.now();
         fullQueued = false;
         queuedFiles = new Map();
         queuedFileCount = 0;
@@ -256,7 +343,7 @@ export async function startServer({
   }
 
   function usageView(timeZone, options) {
-    const key = JSON.stringify([timeZone, options.from, options.to, options.granularity]);
+    const key = JSON.stringify([timeZone, options.from, options.to, options.granularity, options.device]);
     let view = views.get(key);
     if (!view) {
       const entries = estimateRows(store.readUsage(timeZone, options), store.getPriceOverrides());
@@ -274,6 +361,8 @@ export async function startServer({
       sources: status?.sources ?? [],
       paths: store.getPaths(),
       imports: store.getImports(),
+      devices: store.listDevices(),
+      preferences: preferences(),
       syncedAt: status?.syncedAt ?? null,
       revision,
     };
@@ -302,11 +391,12 @@ export async function startServer({
       if (target.origin !== url) throw new RequestError('请求地址无效。', 403);
 
       const get = request.method === 'GET';
-      const route = target.pathname;
+      const route = requestPath(request.url);
       const query = target.searchParams;
-      if (get && files.has(route)) {
-        const [name, type] = files.get(route);
-        return send(response, 200, await readFile(join(publicDir, name)), type);
+      if (get && !route.startsWith('/api/')) {
+        const asset = await staticFile(assetRoot, route);
+        if (asset) return send(response, 200, asset.contents, asset.contentType);
+        throw new RequestError('找不到该页面。', 404);
       }
       if (get && route === '/api/events') return listenEvents(request, response);
 
@@ -318,14 +408,38 @@ export async function startServer({
       }
 
       if (get && route === '/api/usage') return send(response, 200, await snapshot(timeZone, bucketOptions(query)));
+      if (get && route === '/api/devices') {
+        if (!status) await (pendingScan ?? refresh());
+        const overrides = store.getPriceOverrides();
+        const devices = store.readDeviceUsage(timeZone, bucketOptions(query)).map(({ entries, ...device }) => ({
+          ...device,
+          estimatedCost: estimateTotals(estimateRows(entries, overrides)).estimatedCost,
+        }));
+        return send(response, 200, { devices });
+      }
+      if (get && route === '/api/preferences') return send(response, 200, { preferences: preferences(), notifications: Boolean(notifyBudget) });
+      if (get && route === '/api/tray') {
+        if (!status) await (pendingScan ?? refresh());
+        const settings = preferences();
+        const { day } = usagePeriods(settings);
+        const view = usageView(settings.timeZone, { from: day, to: day, granularity: 'day' });
+        return send(response, 200, {
+          totalTokens: view.coverage.totalTokens,
+          estimatedCost: view.estimatedCost,
+          displayCost: displayMoney(view.estimatedCost, settings),
+          locale: settings.locale,
+          syncEnabled: Boolean(store.getSyncConfig()?.enabled),
+        });
+      }
       if (get && route === '/api/day') {
         const date = calendarDate(query.get('date'));
+        const device = deviceFilter(query.get('device'));
         if (!status) await (pendingScan ?? refresh());
-        const complete = views.get(JSON.stringify([timeZone, undefined, undefined, 'day']));
+        const complete = views.get(JSON.stringify([timeZone, undefined, undefined, 'day', device]));
         const entries = complete
           ? complete.entries.filter((entry) => entry.date === date)
-          : usageView(timeZone, { from: date, to: date, granularity: 'day' }).entries;
-        return send(response, 200, { date, timeZone, ...store.readDay(timeZone, date), ...estimateTotals(entries), revision });
+          : usageView(timeZone, { from: date, to: date, granularity: 'day', device }).entries;
+        return send(response, 200, { date, timeZone, ...store.readDay(timeZone, date, { device }), ...estimateTotals(entries), revision });
       }
       if (get && route === '/api/pricing') return send(response, 200, { defaultRates, overrides: store.getPriceOverrides(), currency: 'USD', pricingBasis });
       if (get && route === '/api/sync') return send(response, 200, folderSync.status());
@@ -336,6 +450,12 @@ export async function startServer({
       }
 
       if (request.method === 'DELETE') {
+        const retired = /^\/api\/sync\/peers\/([a-f0-9-]{36})$/.exec(route);
+        if (retired) {
+          const device = deviceFilter(retired[1]);
+          await folderSync.retirePeer(device);
+          return send(response, 200, folderSync.status());
+        }
         if (route === '/api/pricing') {
           const { provider, model } = checkedInput(() => priceIdentity(query.get('provider'), query.get('model'), providers));
           const overrides = store.getPriceOverrides().filter((rate) => rate.provider !== provider || rate.model !== model);
@@ -354,7 +474,35 @@ export async function startServer({
         throw new RequestError('找不到该操作。', 404);
       }
 
-      const body = await readJson(request);
+      const body = await readJson(request, route === '/api/backup/restore' ? 128 * 1024 * 1024 : maxBody);
+      if (route === '/api/preferences') {
+        const settings = checkedInput(() => normalizePreferences({ timeZone, ...body }, preferences()));
+        store.setPreferences(settings);
+        budgetGeneration++;
+        retryBudgetAfter = 0;
+        changed();
+        return send(response, 200, { preferences: settings, notifications: Boolean(notifyBudget) });
+      }
+      if (route === '/api/backup/export') {
+        return send(response, 200, { format: 'tokenstat-backup', version: 1, createdAt: new Date().toISOString(), ...store.exportBackup() });
+      }
+      if (route === '/api/backup/restore') {
+        if (body.format !== 'tokenstat-backup' || body.version !== 1 || !body.paths
+          || typeof body.paths !== 'object' || Array.isArray(body.paths)
+          || Object.entries(body.paths).some(([provider, path]) =>
+            !localProviders.includes(provider) || typeof path !== 'string' || path.length > 4096 || /[\0\r\n]/u.test(path))
+          || !Array.isArray(body.priceOverrides) || body.priceOverrides.length > 500) {
+          throw new RequestError('无法识别 TokenStat 备份或配置格式。');
+        }
+        const rates = checkedInput(() => body.priceOverrides.map((rate) => normalizeRate(rate, providers)));
+        const result = checkedInput(() => store.restoreBackup({ ...body, priceOverrides: rates }));
+        budgetGeneration++;
+        changed();
+        void updateWatchers();
+        await refresh();
+        scheduleFolderSync();
+        return send(response, 200, result);
+      }
       if (route === '/api/sync/settings') {
         let settings;
         try {
@@ -373,8 +521,17 @@ export async function startServer({
         if (!status) await (pendingScan ?? refresh());
         return send(response, 200, await runFolderSync());
       }
+      if (route === '/api/sync/restore-peer') {
+        const device = deviceFilter(body.deviceId);
+        if (!device || device === 'local') throw new RequestError('设备标识无效。');
+        await folderSync.restorePeer(device);
+        scheduleFolderSync(0);
+        return send(response, 200, folderSync.status());
+      }
       if (route === '/api/sync/pairing-key') {
-        const pairingKey = store.getSyncConfig()?.key;
+        let pairingKey;
+        try { pairingKey = await folderSync.getPairingKey(); }
+        catch (error) { throw new RequestError(error.message); }
         if (!pairingKey) throw new RequestError('请先配置跨设备同步。');
         return send(response, 200, { pairingKey });
       }
@@ -426,6 +583,7 @@ export async function startServer({
     stopping = true;
     clearTimeout(scheduledScan);
     clearTimeout(scheduledSync);
+    clearTimeout(scheduledBudget);
     clearInterval(poll);
     clearInterval(heartbeat);
     for (const watcher of watchers.values()) watcher.close();
@@ -438,6 +596,7 @@ export async function startServer({
       stopMonitoring();
       cleanup = (async () => {
         await pendingScan?.catch(() => {});
+        await pendingBudget;
         try {
           await folderSync.close();
         } finally {
@@ -478,11 +637,15 @@ export async function startServer({
   fullQueued = true;
   scheduleScan(status ? 400 : 25);
   scheduleFolderSync(1000);
+  scheduleBudget();
   poll = setInterval(() => {
-    void updateWatchers();
-    fullQueued = true;
-    scheduleScan(0);
+    if (watchDegraded || !watchers.size || Date.now() - lastAudit >= watchedAuditInterval) {
+      void updateWatchers();
+      fullQueued = true;
+      scheduleScan(0);
+    }
     scheduleFolderSync(0);
+    scheduleBudget();
   }, pollInterval).unref();
   heartbeat = setInterval(() => {
     for (const response of subscribers) streamWrite(response, ': keep-alive\n\n');

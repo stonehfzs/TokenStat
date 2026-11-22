@@ -1,8 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, Tray } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAutostart, LOGIN_FLAG } from './autostart.mjs';
 import { startDesktopBackend } from './backend.mjs';
+import { createBudgetNotifier } from './notifications.mjs';
+import { describeTray, watchTrayUsage } from './tray-usage.mjs';
+import { createSyncVault } from './vault.mjs';
+import { loadWindowState, restoreWindowBounds } from './window-state.mjs';
 
 app.setName('TokenStat');
 app.setAppUserModelId('app.tokenstat.desktop');
@@ -11,8 +15,13 @@ const iconPath = fileURLToPath(new URL('./icon.png', import.meta.url));
 const preload = fileURLToPath(new URL('./preferences.cjs', import.meta.url));
 const loginArgument = process.argv.includes(LOGIN_FLAG);
 let mainWindow;
+let windowState;
 let backend;
 let tray;
+let trayMonitor;
+let traySummary;
+let syncingFromTray = false;
+let traySyncFailed = false;
 let autostart;
 let autostartEnabled = null;
 let savingAutostart = false;
@@ -33,13 +42,11 @@ async function openWindow() {
     return;
   }
 
+  const saved = windowState.state;
   const window = new BrowserWindow({
     title: 'TokenStat',
-    width: 1440,
-    height: 1000,
-    minWidth: 365,
-    minHeight: 580,
-    backgroundColor: '#050506',
+    ...restoreWindowBounds(saved, screen),
+    backgroundColor: '#040508',
     icon: iconPath,
     autoHideMenuBar: true,
     show: false,
@@ -68,11 +75,23 @@ async function openWindow() {
   window.on('close', () => {
     const page = URL.parse(webContents.getURL());
     if (page?.origin === origin) lastPage = page.hash;
+    rememberWindow(window);
   });
   window.on('closed', () => { mainWindow = undefined; });
   window.on('session-end', shutdown);
-  await window.loadURL(`${backend.url}/${lastPage}`);
-  if (!quitting && !window.isDestroyed()) reveal(window);
+  try {
+    await window.loadURL(`${backend.url}/${lastPage}`);
+  } catch (error) {
+    if (!quitting && !window.isDestroyed()) throw error;
+  }
+  if (!quitting && !window.isDestroyed()) {
+    if (saved?.maximized) window.maximize();
+    reveal(window);
+  }
+}
+
+function rememberWindow(window) {
+  if (window && !window.isDestroyed()) windowState?.remember(window.getNormalBounds(), window.isMaximized());
 }
 
 function showWindow() {
@@ -83,10 +102,20 @@ function showWindow() {
 
 function updateTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
+  const labels = describeTray(traySummary);
+  tray.setToolTip(`TokenStat · ${labels.usageLine} · ${labels.costLine}`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 TokenStat', click: showWindow },
+    { label: labels.usageLine, enabled: false },
+    { label: labels.costLine, enabled: false },
+    { type: 'separator' },
+    { label: labels.launch, click: showWindow },
     {
-      label: '开机自启动',
+      label: syncingFromTray ? labels.syncing : traySyncFailed ? labels.syncError : labels.sync,
+      enabled: traySummary?.syncEnabled === true && !syncingFromTray,
+      click: () => { void syncFromTray(); },
+    },
+    {
+      label: labels.autostart,
       type: 'checkbox',
       checked: autostartEnabled === true,
       enabled: autostart.supported && autostartEnabled !== null && !savingAutostart,
@@ -97,8 +126,21 @@ function updateTrayMenu() {
       },
     },
     { type: 'separator' },
-    { label: '退出 TokenStat', click: () => app.quit() },
+    { label: labels.quit, click: () => app.quit() },
   ]));
+}
+
+async function syncFromTray() {
+  if (syncingFromTray || !traySummary?.syncEnabled || !trayMonitor) return;
+  syncingFromTray = true;
+  traySyncFailed = false;
+  updateTrayMenu();
+  try {
+    traySyncFailed = !(await trayMonitor.syncNow());
+  } finally {
+    syncingFromTray = false;
+    updateTrayMenu();
+  }
 }
 
 async function getAutostart() {
@@ -152,11 +194,22 @@ function installPreferencesHandlers() {
 
 function installTray() {
   try {
-    tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 }));
-    tray.setToolTip('TokenStat');
+    let image;
+    if (process.platform === 'darwin') {
+      image = nativeImage.createFromPath(fileURLToPath(new URL('./trayTemplate.png', import.meta.url)));
+      image.setTemplateImage(true);
+    } else {
+      image = nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 });
+    }
+    tray = new Tray(image);
     tray.on('click', showWindow);
     tray.on('double-click', showWindow);
     updateTrayMenu();
+    trayMonitor = watchTrayUsage(backend.url, (summary) => {
+      if (JSON.stringify(summary) === JSON.stringify(traySummary)) return;
+      traySummary = summary;
+      updateTrayMenu();
+    });
   } catch (error) {
     tray?.destroy();
     tray = undefined;
@@ -173,14 +226,13 @@ function shutdown() {
   quitting = true;
   if (!backend || draining) return;
   draining = true;
+  rememberWindow(mainWindow);
+  trayMonitor?.close();
   tray?.destroy();
-  void backend.close().then(
-    () => app.exit(0),
-    (error) => {
-      console.error('[TokenStat]', error);
-      app.exit(1);
-    },
-  );
+  void Promise.allSettled([backend.close(), windowState?.flush()]).then(([closed]) => {
+    if (closed.status === 'rejected') console.error('[TokenStat]', closed.reason);
+    app.exit(closed.status === 'fulfilled' ? 0 : 1);
+  });
 }
 
 if (app.requestSingleInstanceLock({ loginArgument })) {
@@ -203,7 +255,12 @@ if (app.requestSingleInstanceLock({ loginArgument })) {
   app.whenReady().then(async () => {
     autostart = createAutostart(app);
     const loginLaunch = autostart.isLoginLaunch();
-    backend = await startDesktopBackend(join(app.getPath('userData'), 'data'));
+    const userData = app.getPath('userData');
+    windowState = await loadWindowState(userData);
+    backend = await startDesktopBackend(join(userData, 'data'), {
+      syncVault: createSyncVault(safeStorage),
+      notifyBudget: createBudgetNotifier(Notification, { icon: iconPath, onClick: showWindow }),
+    });
     void backend.finished.catch((error) => { if (!quitting) showStartupError(error); });
     installPreferencesHandlers();
     installTray();

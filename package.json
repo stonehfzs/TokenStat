@@ -1,6 +1,6 @@
 {
   "name": "tokenstat",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Local token usage dashboard for AI tools.",
   "productName": "TokenStat",
@@ -12,6 +12,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "test": "node --test",
     "desktop": "electron .",
     "pack": "electron-builder --dir --publish never",
     "dist": "electron-builder --publish never",
@@ -34,7 +35,8 @@
       "public/**",
       "desktop/*.mjs",
       "desktop/*.cjs",
-      "desktop/icon.png"
+      "desktop/icon.png",
+      "desktop/trayTemplate*.png"
     ],
     "mac": {
       "category": "public.app-category.productivity",

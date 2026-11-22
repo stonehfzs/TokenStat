@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    name: Test and package · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build native desktop package
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify package contents
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readdirSync, readFileSync, statSync } from 'node:fs';
+          import { join } from 'node:path';
+          import asar from '@electron/asar';
+
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const extensions = { linux: '.AppImage', win32: '-Setup.exe', darwin: '.dmg' };
+          const output = readdirSync('dist', { recursive: true });
+          const artifact = output.find((name) => name.startsWith('TokenStat-' + version + '-')
+            && name.endsWith(extensions[process.platform]));
+          assert(artifact && statSync(join('dist', artifact)).size > 0, 'Native installer is missing');
+
+          const archive = output.find((name) => /[/\\]app\.asar$/.test(name));
+          assert(archive, 'Application archive is missing');
+          const entries = new Set(asar.listPackage(join('dist', archive))
+            .map((name) => name.replaceAll('\\', '/').replace(/^\//, '')));
+          for (const file of ['desktop/main.mjs', 'desktop/backend-worker.mjs', 'desktop/preferences.cjs',
+            'desktop/trayTemplate.png', 'desktop/trayTemplate@2x.png', 'server.mjs', 'lib/store.mjs',
+            'lib/sync.mjs', 'public/index.html']) {
+            assert(entries.has(file), 'Missing application file ' + file);
+          }
+          JS

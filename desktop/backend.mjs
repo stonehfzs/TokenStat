@@ -1,8 +1,9 @@
 import { Worker } from 'node:worker_threads';
+import { answerDesktopRequest } from './bridge.mjs';
 
 const shutdownTimeout = 45_000;
 
-export async function startDesktopBackend(dataDir) {
+export async function startDesktopBackend(dataDir, services = {}) {
   const worker = new Worker(new URL('./backend-worker.mjs', import.meta.url), {
     name: 'TokenStat backend',
     workerData: { dataDir },
@@ -29,8 +30,18 @@ export async function startDesktopBackend(dataDir) {
     });
   }
 
-  worker.once('message', (message) => {
-    if (typeof message?.url === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(message.url)) {
+  worker.on('message', (message) => {
+    if (message?.type === 'desktop-request' && Number.isSafeInteger(message.id)) {
+      void answerDesktopRequest(message, services).then((response) => {
+        if (!exited) worker.postMessage(response);
+      }).catch((error) => {
+        if (exited) return;
+        failed(error);
+        terminate();
+      });
+      return;
+    }
+    if (message?.type === 'ready' && typeof message.url === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(message.url)) {
       ready.resolve(message.url);
     } else {
       failed(new Error('TokenStat 后台服务返回了无效的本机地址。'));
@@ -59,7 +70,7 @@ export async function startDesktopBackend(dataDir) {
       }, shutdownTimeout);
       timer.unref();
       try {
-        worker.postMessage('close');
+        worker.postMessage({ type: 'close' });
       } catch (error) {
         failed(error);
         terminate();
