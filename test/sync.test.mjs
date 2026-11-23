@@ -122,7 +122,11 @@ test('stages cross-month moves and removals until every changed shard is authent
   const malformed = Buffer.from(correct);
   malformed[malformed.length - 1] ^= 1;
   await writeFile(shard, malformed);
-  assert.equal((await f.b.run()).state, 'error');
+  const failed = await f.b.run();
+  assert.equal(failed.state, 'error');
+  assert.deepEqual(failed.peerIssues.find((item) => item.deviceId === f.device).months, [
+    { month: '2026-12', state: 'corrupt', reason: 'shard-authentication-failed' },
+  ]);
   assert.equal(total(f.receiver, f.device), 93);
   await writeFile(shard, correct);
   assert.equal((await f.b.run()).state, 'ok');
@@ -130,6 +134,143 @@ test('stages cross-month moves and removals until every changed shard is authent
   assert.deepEqual(f.receiver.readUsage(timezone, { device: f.device }).map((entry) => entry.date),
     ['2026-12-02', '2026-11-19']);
   assert.equal(f.receiver.readSyncPeers()[0].count, 2);
+});
+
+test('the audit reports peer faults and only the owner repairs shards into alternate slots', async (t) => {
+  const f = await fixture(t);
+  f.replace([
+    record('september', '2026-09-13T12:00:00.000Z', 20),
+    record('october', '2026-10-14T12:00:00.000Z', 10),
+    record('november', '2026-11-19T12:00:00.000Z', 50),
+  ], 'published');
+  await f.a.run();
+  const revision = f.sender.getSyncIdentity().revision;
+  const manifest = join(f.directory, f.device + '.manifest');
+  const previousManifest = await readFile(manifest);
+  const truncatedSlot = join(f.directory, f.device + '.2026-09.0.shard');
+  const olderSlot = join(f.directory, f.device + '.2026-10.0.shard');
+  const missingSlot = join(f.directory, f.device + '.2026-11.0.shard');
+  const truncated = (await readFile(truncatedSlot)).subarray(0, 12);
+  const corrupted = await readFile(olderSlot);
+  corrupted[corrupted.length - 1] ^= 1;
+  await writeFile(truncatedSlot, truncated);
+  await writeFile(olderSlot, corrupted);
+  await rm(missingSlot);
+
+  const passive = await f.b.run();
+  assert.equal(total(f.receiver), 0);
+  assert.deepEqual(passive.peerIssues.find((item) => item.deviceId === f.device).months, [
+    { month: '2026-11', state: 'missing', reason: 'shard-missing' },
+  ]);
+  const remoteAudit = await f.b.verifyAndRepair();
+  assert.equal(remoteAudit.status, 'attention');
+  assert.equal(remoteAudit.repairedMonths, 0);
+  assert.deepEqual(remoteAudit.devices.find((item) => item.deviceId === f.device).months, [
+    { month: '2026-09', state: 'corrupt', reason: 'shard-invalid' },
+    { month: '2026-10', state: 'corrupt', reason: 'shard-authentication-failed' },
+    { month: '2026-11', state: 'missing', reason: 'shard-missing' },
+  ]);
+  assert.equal(f.b.status().lastVerification.checkedAt, remoteAudit.checkedAt);
+  assert.deepEqual(await readFile(manifest), previousManifest);
+  assert.deepEqual(await readFile(olderSlot), corrupted);
+
+  const repaired = await f.a.verifyAndRepair();
+  assert.equal(repaired.status, 'repaired');
+  assert.equal(repaired.repairedMonths, 3);
+  const local = repaired.devices.find((item) => item.local);
+  assert.equal(local.revision, revision);
+  assert.deepEqual(local.months, [
+    { month: '2026-09', state: 'repaired', reason: 'rebuilt-from-local-data', previousReason: 'shard-invalid' },
+    { month: '2026-10', state: 'repaired', reason: 'rebuilt-from-local-data', previousReason: 'shard-authentication-failed' },
+    { month: '2026-11', state: 'repaired', reason: 'rebuilt-from-local-data', previousReason: 'shard-missing' },
+  ]);
+  assert.notDeepEqual(await readFile(manifest), previousManifest);
+  assert.deepEqual(await readFile(truncatedSlot), truncated);
+  assert.deepEqual(await readFile(olderSlot), corrupted);
+  await stat(join(f.directory, f.device + '.2026-09.1.shard'));
+  await stat(join(f.directory, f.device + '.2026-10.1.shard'));
+  await stat(join(f.directory, f.device + '.2026-11.1.shard'));
+  assert.equal(f.sender.getSyncIdentity().revision, revision);
+  assert.equal((await f.b.run()).state, 'ok');
+  assert.equal(total(f.receiver, f.device), 83);
+  assert.equal((await f.a.verifyAndRepair()).status, 'ok');
+});
+
+test('the audit repairs a newer local month and publishes a removed month as empty', async (t) => {
+  const f = await fixture(t);
+  f.replace([
+    record('october', '2026-10-14T12:00:00.000Z'),
+    record('november', '2026-11-12T12:00:00.000Z'),
+  ], 'published');
+  await f.a.run();
+  await f.b.run();
+  assert.equal(total(f.receiver, f.device), 202);
+  const manifest = join(f.directory, f.device + '.manifest');
+  const previousManifest = await readFile(manifest);
+  await rm(join(f.directory, f.device + '.2026-10.0.shard'));
+  await rm(join(f.directory, f.device + '.2026-11.0.shard'));
+  f.replace([record('october', '2026-10-14T12:00:00.000Z', 500)], 'newer-local');
+
+  const [repaired] = await Promise.all([f.a.verifyAndRepair(), f.a.run()]);
+  assert.equal(repaired.status, 'repaired');
+  assert.equal(repaired.repairedMonths, 2);
+  const local = repaired.devices.find((item) => item.local);
+  assert.equal(local.revision, f.sender.getSyncIdentity().revision);
+  assert.deepEqual(local.months, [
+    { month: '2026-10', state: 'repaired', reason: 'rebuilt-from-local-data', previousReason: 'shard-missing' },
+    { month: '2026-11', state: 'repaired', reason: 'rebuilt-from-local-data', previousReason: 'shard-missing' },
+  ]);
+  assert.notDeepEqual(await readFile(manifest), previousManifest);
+  await stat(join(f.directory, f.device + '.2026-10.1.shard'));
+  await assert.rejects(() => stat(join(f.directory, f.device + '.2026-11.1.shard')), { code: 'ENOENT' });
+  await f.b.run();
+  assert.equal(total(f.receiver, f.device), 501);
+  assert.deepEqual((await f.a.verifyAndRepair()).devices.find((item) => item.local).months, [
+    { month: '2026-10', state: 'verified', reason: null },
+    { month: '2026-11', state: 'empty', reason: null },
+  ]);
+});
+
+test('the audit defers writes if the local revision changes mid-repair or storage is offline', async (t) => {
+  const f = await fixture(t);
+  f.replace([record('october', '2026-10-14T12:00:00.000Z')], 'published');
+  await f.a.run();
+  const manifest = join(f.directory, f.device + '.manifest');
+  const previousManifest = await readFile(manifest);
+  await rm(join(f.directory, f.device + '.2026-10.0.shard'));
+  const readMonth = f.sender.readOwnSyncMonth;
+  f.sender.readOwnSyncMonth = (month, revision) => {
+    f.sender.readOwnSyncMonth = readMonth;
+    const entries = readMonth(month, revision);
+    f.replace([record('october', '2026-10-14T12:00:00.000Z', 500)], 'newer-local');
+    return entries;
+  };
+
+  const blocked = await f.a.verifyAndRepair();
+  assert.equal(blocked.status, 'attention');
+  assert.equal(blocked.repairedMonths, 0);
+  assert.deepEqual(blocked.devices.find((item) => item.local).months, [
+    { month: '2026-10', state: 'missing', reason: 'local-revision-changed', previousReason: 'shard-missing' },
+  ]);
+  assert.deepEqual(await readFile(manifest), previousManifest);
+  await assert.rejects(() => stat(join(f.directory, f.device + '.2026-10.1.shard')), { code: 'ENOENT' });
+
+  const moved = f.shared + '-offline';
+  await rename(f.shared, moved);
+  try {
+    const offline = await f.a.verifyAndRepair();
+    assert.equal(offline.status, 'offline');
+    assert.equal(offline.reason, 'folder-offline');
+    assert.equal(offline.repairedMonths, 0);
+    assert.equal(offline.devices.find((item) => item.local).status, 'offline');
+    await assert.rejects(() => stat(f.shared), { code: 'ENOENT' });
+  } finally {
+    await rename(moved, f.shared);
+  }
+  assert.equal((await f.a.verifyAndRepair()).status, 'repaired');
+  assert.equal((await f.a.verifyAndRepair()).status, 'ok');
+  await f.b.run();
+  assert.equal(total(f.receiver, f.device), 501);
 });
 
 async function writeLegacy(f) {
@@ -228,6 +369,7 @@ test('upgrades a populated v4 database and plans months from its existing cache'
     DROP TABLE sync_peer_months;
     DROP TABLE own_sync_months;
     ALTER TABLE sync_peers DROP COLUMN protocol;
+    ALTER TABLE source_files DROP COLUMN diagnostics;
     PRAGMA user_version = 4;
   `);
   old.close();

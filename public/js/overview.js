@@ -1,17 +1,20 @@
 import { t as translateText, tr as translateTemplate } from './i18n.js';
 import { createDonut, createSparkline, createTrend } from '../charts.js';
 import { openDay } from './daily.js';
-import { clockTime, compact, dateMillis, displayDate, full, ioSeriesMeta, offsetDay, oneDay, percent, reducedMotion, rows, state, today, weekdayLabel, weekdays } from './state.js';
-import { applyDynamicStyles, byId, deltaBadgeHtml, escapeHtml, get, getColorVar, isLoading, syncAllGliders, toolList, totals } from './ui.js';
+import { renderOverviewBudget } from './overview-budget.js';
+import { overviewPeriod, overviewTrend, validOverviewDate } from './overview-data.js';
+import { exportReportCard } from './report-card.js';
+import { clockTime, compact, displayDate, full, ioSeriesMeta, money, offsetDay, percent, reducedMotion, rows, state, today, weekdayLabel, weekdays } from './state.js';
+import { applyDynamicStyles, byId, deltaBadgeHtml, escapeHtml, get, getColorVar, isLoading, syncAllGliders, toast, toolList, totals } from './ui.js';
 import { providerRows } from './usage-table.js';
-
-const trendPageSize = 90;
 
 const rhythmOrder = [1, 2, 3, 4, 5, 6, 0];
 
 const drawSparkline = createSparkline(byId('hero-sparkline'));
 
-const trendChart = createTrend(byId('trend-canvas'), byId('chart-tooltip'), { compact, full, onDate: openDay });
+const trendChart = createTrend(byId('trend-canvas'), byId('chart-tooltip'), {
+  compact, full, money: money.format, percent: percent.format, onDate: openDay,
+});
 
 const donutChart = createDonut(byId('donut-canvas'), { onHover: handleDonutHover });
 
@@ -169,56 +172,8 @@ function renderOverviewTelemetry(current, previous, days, entries) {
 }
 
 function period(entries) {
-  const end = today();
-  if (state.range === 'all') {
-    const dates = entries.map((entry) => entry.date).sort();
-    const start = dates[0] && dates[0] < offsetDay(end, -6) ? dates[0] : offsetDay(end, -6);
-    const maxEnd = dates.at(-1) > end ? dates.at(-1) : end;
-    const days = Math.max(1, Math.round((dateMillis(maxEnd) - dateMillis(start)) / oneDay) + 1);
-    return { start, end: maxEnd, days, entries };
-  }
-  const days = Number(state.range);
-  const start = offsetDay(end, 1 - days);
-  const prev = offsetDay(start, -days);
-  return {
-    start, end, days,
-    entries: entries.filter((entry) => entry.date >= start && entry.date <= end),
-    previous: totals(entries.filter((entry) => entry.date >= prev && entry.date < start)),
-  };
-}
-
-function trendData(start, end, entries, mode) {
-  const days = Math.round((dateMillis(end) - dateMillis(start)) / oneDay) + 1;
-  const pages = Math.ceil(days / trendPageSize);
-  state.trendPage = Math.min(state.trendPage, pages - 1);
-  const last = offsetDay(end, -state.trendPage * trendPageSize);
-  const count = Math.min(trendPageSize, days - state.trendPage * trendPageSize);
-  const first = offsetDay(last, 1 - count);
-  const buckets = Array.from({ length: count }, (_, index) => ({
-    date: offsetDay(first, index),
-    values: {},
-    total: 0,
-  }));
-
-  for (const entry of entries) {
-    const index = Math.round((dateMillis(entry.date) - dateMillis(first)) / oneDay);
-    const bucket = buckets[index];
-    if (!bucket) continue;
-    if (mode === 'io') {
-      if (!state.hiddenIo.has('input')) {
-        bucket.values.input = (bucket.values.input || 0) + entry.input;
-        bucket.total += entry.input;
-      }
-      if (!state.hiddenIo.has('output')) {
-        bucket.values.output = (bucket.values.output || 0) + entry.output;
-        bucket.total += entry.output;
-      }
-    } else {
-      bucket.total += entry.total;
-      bucket.values[entry.provider] = (bucket.values[entry.provider] || 0) + entry.total;
-    }
-  }
-  return { buckets, first, last, pages };
+  const selected = overviewPeriod(entries, state.range, today(), state.customRange);
+  return { ...selected, previous: selected.previous ? totals(selected.previous) : undefined };
 }
 
 function renderModelLeaderboard(entries) {
@@ -355,27 +310,38 @@ function handleDonutHover(part) {
 
 function renderOverview() {
   const all = rows();
-  const tools = toolList(all);
   const { start, end, days, entries, previous } = period(all);
+  const tools = toolList(entries);
   const current = totals(entries);
   state.overviewTotal = current.total;
 
   byId('overview-caption').textContent = translateTemplate`${displayDate(start)} — ${displayDate(end)} · ${days} 天`;
   renderOverviewTelemetry(current, previous, days, entries);
+  renderOverviewBudget();
 
   const isIo = state.trendMode === 'io';
-  const ioSeries = ioSeriesMeta.map((item) => ({ ...item, color: getColorVar(item.cssVar, item.fallback) }));
+  const isCost = state.trendMetric === 'cost';
+  const ioCostLabels = { input: translateText('输入费用'), output: translateText('输出费用') };
+  const ioSeries = ioSeriesMeta.map((item) => ({ ...item,
+    name: isCost ? ioCostLabels[item.id] : item.name, color: getColorVar(item.cssVar, item.fallback),
+  }));
   const legendItems = isIo ? ioSeries : tools;
   const hiddenSet = isIo ? state.hiddenIo : state.hiddenTools;
   const visibleSeries = legendItems.filter((item) => !hiddenSet.has(item.id));
-  const trendEntries = isIo ? entries : entries.filter((entry) => !state.hiddenTools.has(entry.provider));
+  const { buckets, first, last, pages, page } = overviewTrend({ start, end, entries,
+    mode: state.trendMode, metric: state.trendMetric, hidden: hiddenSet, page: state.trendPage,
+  });
+  state.trendPage = page;
+  const sparkline = !isCost && !isIo && !hiddenSet.size && !page ? buckets : overviewTrend({
+    start, end, entries, mode: 'provider', metric: 'token', hidden: new Set(), page: 0,
+  }).buckets;
+  drawSparkline(sparkline.slice(-30).map((bucket) => bucket.total));
 
-  const { buckets, first, last, pages } = trendData(start, end, trendEntries, state.trendMode);
-  drawSparkline(buckets.slice(-30).map((b) => b.total));
-
-  byId('trend-caption').textContent = pages > 1
-    ? translateTemplate`${first} 至 ${last} · ${isIo ? translateText('每日输入与输出') : translateText('每日工具消耗')}`
+  const trendDescription = isCost
+    ? (isIo ? translateText('按输入与输出对比每日估算费用') : translateText('按工具统计每日估算费用'))
     : (isIo ? translateText('按输入与输出对比每日 Token 消耗') : translateText('按工具统计每日 Token 消耗'));
+  byId('trend-caption').textContent = pages > 1
+    ? translateTemplate`${first} 至 ${last} · ${trendDescription}` : trendDescription;
   byId('trend-navigation').hidden = pages <= 1;
   byId('trend-older').disabled = state.trendPage >= pages - 1;
   byId('trend-newer').disabled = state.trendPage === 0;
@@ -385,22 +351,25 @@ function renderOverview() {
   ).join('');
 
   get('#chart-style-controls button').forEach((btn) => btn.setAttribute('aria-pressed', btn.dataset.style === state.chartStyle));
+  get('#trend-metric-controls button').forEach((btn) => btn.setAttribute('aria-pressed', btn.dataset.metric === state.trendMetric));
   get('#trend-mode-controls button').forEach((btn) => btn.setAttribute('aria-pressed', btn.dataset.mode === state.trendMode));
   get('#range-controls button').forEach((btn) => btn.setAttribute('aria-pressed', btn.dataset.range === state.range));
 
-  const hasData = buckets.some((bucket) => bucket.total > 0);
+  const hasData = visibleSeries.length > 0 && buckets.some((bucket) => isCost ? bucket.pricedRecords > 0 : bucket.total > 0);
   const avgEl = byId('trend-avg');
   if (hasData && buckets.length > 0) {
-    const avgVal = Math.round(buckets.reduce((s, b) => s + b.total, 0) / buckets.length);
-    avgEl.textContent = translateTemplate`日均 ${compact(avgVal)}`;
+    const avgVal = buckets.reduce((sum, bucket) => sum + bucket.total, 0) / buckets.length;
+    avgEl.textContent = translateTemplate`日均 ${isCost ? money.format(avgVal) : compact(Math.round(avgVal))}`;
     avgEl.hidden = false;
   } else {
     avgEl.hidden = true;
   }
 
-  trendChart.update(buckets, visibleSeries, state.chartStyle);
+  byId('trend-canvas').setAttribute('aria-label', translateText(isCost ? '每日估算费用趋势图' : '每日 Token 用量趋势图'));
+  trendChart.update(buckets, visibleSeries, state.chartStyle, state.trendMetric);
   byId('chart-empty').hidden = hasData;
-  byId('chart-empty-title').textContent = isLoading() ? translateText('正在扫描本地日志') : visibleSeries.length ? translateText('该周期暂无用量记录') : translateText('请至少选择一个系列');
+  const emptyLabel = isCost && buckets.some((bucket) => bucket.records > 0) ? '该周期暂无可估算费用' : '该周期暂无用量记录';
+  byId('chart-empty-title').textContent = isLoading() ? translateText('正在扫描本地日志') : visibleSeries.length ? translateText(emptyLabel) : translateText('请至少选择一个系列');
   byId('chart-empty-detail').textContent = isLoading() ? translateText('首次扫描较大日志可能需要几秒') : visibleSeries.length ? translateText('可切换周期、开启示例数据或在来源中配置日志') : '';
   byId('trend-update').textContent = state.demo ? translateText('当前正在预览示例数据') : state.snapshot?.syncedAt
     ? translateTemplate`最近同步 ${clockTime.format(new Date(state.snapshot.syncedAt))}` : translateText('等待本地同步');
@@ -440,6 +409,7 @@ function renderOverview() {
     expandAllBtn.textContent = allExpanded ? translateText('收起全部') : translateText('展开全部');
   }
   get('[data-export="overview"]')[0].disabled = !entries.length;
+  byId('export-report').disabled = !entries.length;
   applyDynamicStyles();
   requestAnimationFrame(() => syncAllGliders());
 }
@@ -459,12 +429,64 @@ function bindOverview() {
       renderOverview();
     }
   });
+  byId('trend-metric-controls').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-metric]');
+    if (button && button.dataset.metric !== state.trendMetric) {
+      state.trendMetric = button.dataset.metric;
+      renderOverview();
+    }
+  });
+  const rangeForm = byId('overview-range-form');
+  const rangeError = byId('overview-range-error');
+  const customButton = byId('range-controls').querySelector('[data-range="custom"]');
+  function showRangeForm(open) {
+    rangeForm.hidden = !open;
+    rangeError.hidden = true;
+    customButton.setAttribute('aria-expanded', open);
+    if (open) {
+      const { start, end } = period(rows());
+      rangeForm.elements.from.value = state.customRange?.from ?? start;
+      rangeForm.elements.to.value = state.customRange?.to ?? end;
+      rangeForm.elements.from.focus();
+    }
+  }
   byId('range-controls').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-range]');
-    if (button && button.dataset.range !== state.range) {
+    if (!button) return;
+    if (button === customButton) {
+      showRangeForm(rangeForm.hidden);
+      return;
+    }
+    showRangeForm(false);
+    if (button.dataset.range !== state.range) {
       state.range = button.dataset.range;
       state.trendPage = 0;
       renderOverview();
+    }
+  });
+  rangeForm.addEventListener('input', () => { rangeError.hidden = true; });
+  rangeForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const { from, to } = Object.fromEntries(new FormData(rangeForm));
+    if (!validOverviewDate(from) || !validOverviewDate(to) || from > to) {
+      rangeError.textContent = translateText(from > to ? '开始日期不能晚于结束日期' : '请选择有效的日期范围');
+      rangeError.hidden = false;
+      return;
+    }
+    state.customRange = { from, to };
+    state.range = 'custom';
+    state.trendPage = 0;
+    rangeError.hidden = true;
+    renderOverview();
+  });
+  byId('export-report').addEventListener('click', async () => {
+    const { start, end, entries } = period(rows());
+    if (!entries.length) return;
+    try {
+      await exportReportCard({ start, end, entries, tools: toolList(entries), demo: state.demo });
+      toast(translateText('已导出报告图'));
+    } catch {
+      toast(translateText('无法导出报告图'));
     }
   });
   byId('chart-legend').addEventListener('click', (event) => {
@@ -509,12 +531,12 @@ function bindOverview() {
     state.tableQuery = event.target.value;
     const all = rows();
     const { entries } = period(all);
-    byId('provider-table').innerHTML = providerRows(toolList(all), entries, false, state.tableQuery);
+    byId('provider-table').innerHTML = providerRows(toolList(entries), entries, false, state.tableQuery);
     applyDynamicStyles();
   });
   byId('toggle-expand-all').addEventListener('click', () => {
     const entries = period(rows()).entries;
-    const tools = toolList(rows()).filter((t) => entries.some((e) => e.provider === t.id));
+    const tools = toolList(entries).filter((t) => entries.some((e) => e.provider === t.id));
     const allExpanded = tools.every((t) => state.expanded.has(t.id));
     if (allExpanded) state.expanded.clear();
     else tools.forEach((t) => state.expanded.add(t.id));

@@ -12,6 +12,7 @@ try {
     const { preferences } = await response.json();
     if (preferences?.locale) preferredLocale = preferences.locale;
     if (preferences?.timeZone) document.documentElement.dataset.timeZone = preferences.timeZone;
+    if (preferences?.visualEffects) document.documentElement.dataset.visualEffects = preferences.visualEffects;
   }
 } catch {
   // The main app reports connection errors using the last available language.

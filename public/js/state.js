@@ -1,5 +1,5 @@
 import { t as translateText } from './i18n.js';
-import { createDayFormatter } from '../calendar.js';
+import { createDayFormatter, dateMillis, offsetDay, oneDay } from '../calendar.js';
 import { demoUsage } from '../demo.js';
 
 const timeZone = document.documentElement.dataset.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -37,13 +37,12 @@ const full = (value) => precise.format(value);
 
 const compact = (value) => value >= 1000 ? abbreviated.format(value) : full(value);
 
-const oneDay = 86400000;
-
 const weekdays = [translateText('周日'), translateText('周一'), translateText('周二'), translateText('周三'), translateText('周四'), translateText('周五'), translateText('周六')];
 
 const fields = ['input', 'output', 'cached', 'reasoning', 'total'];
 
-const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const reducedMotion = () => document.documentElement.dataset.visualEffects === 'lite'
+  || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 const providers = [
   { id: 'codex', name: 'Codex', cssVar: '--c-codex', fallback: '#2dd4bf', icon: 'code', client: translateText('Codex 会话日志'), path: '~/.codex' },
@@ -53,6 +52,8 @@ const providers = [
   { id: 'gemini-cli', name: 'Gemini CLI', cssVar: '--c-gemini-cli', fallback: '#818cf8', icon: 'code', client: translateText('Gemini CLI 历史会话'), path: '~/.gemini/tmp' },
   { id: 'cline', name: 'Cline', cssVar: '--c-cline', fallback: '#f472b6', icon: 'database', client: translateText('Cline 会话与编辑器任务用量'), path: '~/.cline/data/sessions' },
   { id: 'roo', name: 'Roo Code', cssVar: '--c-roo', fallback: '#fb923c', icon: 'database', client: translateText('编辑器扩展的 Roo Code 任务用量'), path: 'User/globalStorage/rooveterinaryinc.roo-cline/tasks' },
+  { id: 'kilo', name: 'Kilo Code', cssVar: '--c-kilo', fallback: '#e9cd56', icon: 'code', client: translateText('Kilo Code 本地会话与编辑器任务用量'), path: '~/.local/share/kilo' },
+  { id: 'opencode', name: 'OpenCode', cssVar: '--c-opencode', fallback: '#47d1a0', icon: 'code', client: translateText('OpenCode 本地会话用量'), path: '~/.local/share/opencode' },
   { id: 'other', name: translateText('其他'), cssVar: '--c-other', fallback: '#94a3b8', icon: 'database' },
 ];
 
@@ -85,7 +86,9 @@ const state = {
   theme: 'dark',
   page: 'overview',
   range: '30',
+  customRange: null,
   chartStyle: 'area',
+  trendMetric: 'token',
   trendMode: 'provider',
   trendPage: 0,
   day: today(),
@@ -108,14 +111,6 @@ const state = {
 
 function today() {
   return formatDay(new Date());
-}
-
-function dateMillis(date) {
-  return Date.parse(`${date}T00:00:00Z`);
-}
-
-function offsetDay(date, offset) {
-  return new Date(dateMillis(date) + offset * oneDay).toISOString().slice(0, 10);
 }
 
 function weekdayLabel(date) {

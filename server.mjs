@@ -1,7 +1,6 @@
 import { watch } from 'node:fs';
 import { mkdir, readFile, realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { homedir, platform } from 'node:os';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { collectLocal, localLogTargets, localWatchRoots } from './lib/local-sources.mjs';
@@ -9,7 +8,9 @@ import { parseUsageFile } from './lib/imports.mjs';
 import { defaultRates, estimateRows, estimateTotals, normalizeRate, priceIdentity, pricingBasis } from './lib/pricing.mjs';
 import { openStore } from './lib/store.mjs';
 import { createSync } from './lib/sync.mjs';
-import { budgetAlerts, defaultPreferences, displayMoney, normalizePreferences, usagePeriods } from './lib/preferences.mjs';
+import { createBackupTransfer } from './lib/backups.mjs';
+import { userDataDir } from './lib/data-dir.mjs';
+import { budgetAlerts, budgetProgress, defaultPreferences, displayMoney, normalizePreferences, usagePeriods } from './lib/preferences.mjs';
 
 const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
 const publicTypes = new Map([
@@ -18,7 +19,7 @@ const publicTypes = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
 ]);
 
-const localProviders = ['codex', 'gemini', 'grok', 'claude', 'gemini-cli', 'cline', 'roo'];
+const localProviders = ['codex', 'gemini', 'grok', 'claude', 'gemini-cli', 'cline', 'roo', 'kilo', 'opencode'];
 const providers = [...localProviders, 'other'];
 const maxBody = 16 * 1024 * 1024;
 const watchDebounce = 750;
@@ -37,12 +38,6 @@ class RequestError extends Error {
     super(message);
     this.status = status;
   }
-}
-
-function userDataDir() {
-  if (platform() === 'win32') return join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'TokenStat');
-  if (platform() === 'darwin') return join(homedir(), 'Library', 'Application Support', 'TokenStat');
-  return join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'tokenstat');
 }
 
 async function readJson(request, limit = maxBody) {
@@ -137,6 +132,7 @@ export async function startServer({
   dataDir = process.env.TOKENSTAT_DATA_DIR || userDataDir(),
   syncVault,
   notifyBudget,
+  backupParts,
 } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('TOKENSTAT_PORT 必须是有效的端口。');
   dataDir = resolve(dataDir);
@@ -144,6 +140,9 @@ export async function startServer({
 
   const assetRoot = await realpath(publicDir);
   const store = await openStore(dataDir);
+  let backup;
+  try { backup = createBackupTransfer(store, dataDir, backupParts); }
+  catch (error) { store.close(); throw error; }
   const subscribers = new Set();
   const watchers = new Map();
   const views = new Map();
@@ -165,6 +164,7 @@ export async function startServer({
   let pendingBudget;
   let retryBudgetAfter = 0;
   let budgetGeneration = 0;
+  let visibleBudgetDay;
   let cleanup;
   let shutdown;
   let heartbeat;
@@ -184,7 +184,7 @@ export async function startServer({
   }
 
   function preferences() {
-    return store.getPreferences() ?? defaultPreferences;
+    return { ...defaultPreferences, ...store.getPreferences() };
   }
 
   function scheduleBudget() {
@@ -201,14 +201,19 @@ export async function startServer({
     return Object.values(preferences().budgets).some(Boolean);
   }
 
+  function budgetViews(settings, { day, monthStart }) {
+    const view = (from) => usageView(settings.timeZone, { from, to: day, granularity: 'day' });
+    return {
+      day: settings.budgets.dailyTokens || settings.budgets.dailyUsd ? view(day) : null,
+      month: settings.budgets.monthlyTokens || settings.budgets.monthlyUsd ? view(monthStart) : null,
+    };
+  }
+
   async function checkBudget() {
     const generation = budgetGeneration;
     const settings = preferences();
     const period = usagePeriods(settings);
-    const view = (from) => usageView(settings.timeZone, { from, to: period.day, granularity: 'day' });
-    const day = settings.budgets.dailyTokens || settings.budgets.dailyUsd ? view(period.day) : null;
-    const month = settings.budgets.monthlyTokens || settings.budgets.monthlyUsd ? view(period.monthStart) : null;
-    const { alerts } = budgetAlerts(settings, store.getBudgetNoticeState() ?? {}, period, { day, month });
+    const { alerts } = budgetAlerts(settings, store.getBudgetNoticeState() ?? {}, period, budgetViews(settings, period));
     for (const { key, mark, title, body } of alerts) {
       if (stopping || budgetGeneration !== generation) break;
       if (await notifyBudget({ title, body })) {
@@ -228,6 +233,20 @@ export async function startServer({
     await folderSync.run();
     for (const response of subscribers) streamWrite(response, 'event: sync\ndata: {}\n\n');
     return folderSync.status();
+  }
+
+  async function finishBackupRestore(result) {
+    budgetGeneration++;
+    changed();
+    void updateWatchers();
+    scheduleFolderSync();
+    try {
+      await refresh();
+      return result;
+    } catch (error) {
+      console.error('[TokenStat] 备份已恢复，重新扫描失败', error.message);
+      return { ...result, refreshFailed: true };
+    }
   }
 
   function scheduleFolderSync(delay = 30_000) {
@@ -356,13 +375,23 @@ export async function startServer({
 
   async function snapshot(timeZone, options) {
     if (!status) await (pendingScan ?? refresh());
+    const settings = preferences();
+    let progress = [];
+    if (Object.values(settings.budgets).some(Boolean)) {
+      const period = usagePeriods(settings);
+      visibleBudgetDay = period.day;
+      progress = budgetProgress(settings, period, budgetViews(settings, period));
+    } else {
+      visibleBudgetDay = undefined;
+    }
     return {
       ...usageView(timeZone, options),
       sources: status?.sources ?? [],
       paths: store.getPaths(),
       imports: store.getImports(),
       devices: store.listDevices(),
-      preferences: preferences(),
+      preferences: settings,
+      budgetProgress: progress,
       syncedAt: status?.syncedAt ?? null,
       revision,
     };
@@ -443,6 +472,8 @@ export async function startServer({
       }
       if (get && route === '/api/pricing') return send(response, 200, { defaultRates, overrides: store.getPriceOverrides(), currency: 'USD', pricingBasis });
       if (get && route === '/api/sync') return send(response, 200, folderSync.status());
+      const volume = /^\/api\/backup\/volumes\/([a-f0-9-]{36})\/([1-9]\d*)$/.exec(route);
+      if (get && volume) return send(response, 200, checkedInput(() => backup.volume(volume[1], Number(volume[2]))));
       if (request.method !== 'POST' && request.method !== 'DELETE') throw new RequestError('找不到该页面。', 404);
       if (request.headers.origin !== url ||
           (request.method === 'POST' && !request.headers['content-type']?.startsWith('application/json'))) {
@@ -450,6 +481,11 @@ export async function startServer({
       }
 
       if (request.method === 'DELETE') {
+        const transfer = /^\/api\/backup\/transfers\/([a-f0-9-]{36})$/.exec(route);
+        if (transfer) {
+          backup.remove(transfer[1]);
+          return send(response, 200, {});
+        }
         const retired = /^\/api\/sync\/peers\/([a-f0-9-]{36})$/.exec(route);
         if (retired) {
           const device = deviceFilter(retired[1]);
@@ -484,24 +520,33 @@ export async function startServer({
         return send(response, 200, { preferences: settings, notifications: Boolean(notifyBudget) });
       }
       if (route === '/api/backup/export') {
-        return send(response, 200, { format: 'tokenstat-backup', version: 1, createdAt: new Date().toISOString(), ...store.exportBackup() });
+        return send(response, 200, checkedInput(() => backup.exportBackup()));
+      }
+      if (route === '/api/backup/transfers') {
+        return send(response, 200, checkedInput(() => backup.beginRestore()));
+      }
+      const partUpload = /^\/api\/backup\/transfers\/([a-f0-9-]{36})\/volume$/.exec(route);
+      if (partUpload) {
+        return send(response, 200, checkedInput(() => backup.stage(partUpload[1], body)));
+      }
+      const partRestore = /^\/api\/backup\/transfers\/([a-f0-9-]{36})\/restore$/.exec(route);
+      if (partRestore) {
+        const dryRun = query.get('dryRun') === 'true';
+        const result = checkedInput(() => backup.restoreVolumes(partRestore[1], dryRun));
+        return send(response, 200, dryRun ? result : await finishBackupRestore(result));
       }
       if (route === '/api/backup/restore') {
-        if (body.format !== 'tokenstat-backup' || body.version !== 1 || !body.paths
-          || typeof body.paths !== 'object' || Array.isArray(body.paths)
-          || Object.entries(body.paths).some(([provider, path]) =>
-            !localProviders.includes(provider) || typeof path !== 'string' || path.length > 4096 || /[\0\r\n]/u.test(path))
-          || !Array.isArray(body.priceOverrides) || body.priceOverrides.length > 500) {
+        if (body.format !== 'tokenstat-backup' || body.version !== 1) {
           throw new RequestError('无法识别 TokenStat 备份或配置格式。');
         }
-        const rates = checkedInput(() => body.priceOverrides.map((rate) => normalizeRate(rate, providers)));
-        const result = checkedInput(() => store.restoreBackup({ ...body, priceOverrides: rates }));
-        budgetGeneration++;
-        changed();
-        void updateWatchers();
-        await refresh();
-        scheduleFolderSync();
-        return send(response, 200, result);
+        const dryRun = query.get('dryRun') === 'true';
+        const result = checkedInput(() => store.restoreBackup(body, { dryRun }));
+        return send(response, 200, dryRun ? result : await finishBackupRestore(result));
+      }
+      if (route === '/api/sync/verify') {
+        const report = await folderSync.verifyAndRepair();
+        for (const subscriber of subscribers) streamWrite(subscriber, 'event: sync\ndata: {}\n\n');
+        return send(response, 200, { ...folderSync.status(), report });
       }
       if (route === '/api/sync/settings') {
         let settings;
@@ -600,7 +645,8 @@ export async function startServer({
         try {
           await folderSync.close();
         } finally {
-          store.close();
+          try { backup.close(); }
+          finally { store.close(); }
         }
       })();
     }
@@ -645,6 +691,13 @@ export async function startServer({
       scheduleScan(0);
     }
     scheduleFolderSync(0);
+    if (visibleBudgetDay) {
+      const { day } = usagePeriods(preferences());
+      if (day !== visibleBudgetDay) {
+        visibleBudgetDay = day;
+        changed();
+      }
+    }
     scheduleBudget();
   }, pollInterval).unref();
   heartbeat = setInterval(() => {

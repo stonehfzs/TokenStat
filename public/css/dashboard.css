@@ -28,6 +28,32 @@
   font-weight: 660;
 }
 
+#range-controls, .hero-right { max-width: 100%; }
+#range-controls button, #trend-metric-controls button { font-weight: 600; }
+
+.overview-range-form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+.overview-range-form label { display: grid; gap: 4px; color: var(--text-2); font-size: 11px; min-width: 0; }
+.overview-range-form .field-input { width: 100%; min-height: 32px; }
+.overview-range-form .range-error { width: 100%; color: var(--neg); font-size: 11px; }
+
+@media (max-width: 520px) {
+  .hero-right { width: 100%; }
+  #range-controls { display: grid; width: 100%; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  #range-controls button { grid-column: span 3; padding-inline: 4px; font-size: 11px; }
+  #range-controls button:nth-of-type(n+5) { grid-column: span 4; }
+  .overview-range-form label { flex: 1 1 44%; }
+}
+
 /* Card Header / Footer */
 .card-head {
   display: flex;
@@ -203,6 +229,12 @@
   margin-top: 5px;
   font-size: 10.5px;
   color: var(--c-input);
+}
+.chart-tooltip .tt-coverage {
+  margin-top: 5px;
+  color: var(--text-2);
+  font-size: 11px;
+  max-width: 23ch;
 }
 
 /* Bento Row 2 */

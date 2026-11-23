@@ -1,6 +1,6 @@
 {
   "name": "tokenstat",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Local token usage dashboard for AI tools.",
   "productName": "TokenStat",
@@ -12,6 +12,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "summary": "node cli.mjs",
     "test": "node --test",
     "desktop": "electron .",
     "pack": "electron-builder --dir --publish never",

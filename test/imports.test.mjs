@@ -54,7 +54,7 @@ test('normalizes dated Gemini and xAI API response metrics from JSONL', () => {
 });
 
 test('retains absent model and date-only precision, and permits explicit tool selection', () => {
-  for (const provider of ['gemini-cli', 'cline', 'roo']) {
+  for (const provider of ['gemini-cli', 'cline', 'roo', 'kilo', 'opencode']) {
     const [record] = parse('usage.json', { date: '2026-11-22', total: 100 }, provider);
     assert.equal(record.provider, provider);
     assert.equal(record.model, null);

@@ -1,4 +1,5 @@
 import { t as translateText, tr as translateTemplate } from './js/i18n.js';
+import { setElementStyle } from './js/dynamic-style.js';
 const weekdays = [translateText('周日'), translateText('周一'), translateText('周二'), translateText('周三'), translateText('周四'), translateText('周五'), translateText('周六')];
 
 function themeColors() {
@@ -45,10 +46,11 @@ function beginCanvas(canvas) {
   return { context, width, height };
 }
 
-function ceiling(value) {
-  if (value < 4) return 4;
+function ceiling(value, minimum) {
+  if (value < minimum) return minimum;
   const unit = 10 ** Math.floor(Math.log10(value));
-  return [1, 2, 2.5, 5, 10].find((factor) => factor * unit >= value) * unit;
+  const factor = [1, 2, 2.5, 5, 10].find((candidate) => candidate * unit >= value) ?? 10;
+  return factor * unit;
 }
 
 function shortDateWithDay(date) {
@@ -128,32 +130,38 @@ export function createSparkline(canvas) {
   return (nextValues) => { values = nextValues; draw(); };
 }
 
-export function createTrend(canvas, tooltip, { compact, full, onDate }) {
+export function createTrend(canvas, tooltip, { compact, full, money, percent, onDate }) {
   let buckets = [];
   let series = [];
   let chartStyle = 'area';
+  let metric = 'token';
   let geometry;
   let selected = -1;
+  const isCost = () => metric === 'cost';
+  const hasUsage = (bucket) => isCost() ? bucket.records > 0 : bucket.total > 0;
+  const formatAxis = (value) => isCost() ? money(value) : compact(value);
+  const formatValue = (value) => isCost() ? money(value) : full(value);
 
   function draw() {
     const frame = beginCanvas(canvas);
     if (!frame) return;
     const { context, width, height } = frame;
     const colors = themeColors();
-    const left = 48;
     const right = 12;
     const top = 22;
     const bottom = height - 28;
     const plotHeight = bottom - top;
-    const span = width - left - right;
-    const slot = span / (buckets.length || 1);
     const maxTotal = chartStyle === 'line'
       ? Math.max(...buckets.flatMap((b) => series.map((s) => b.values[s.id] || 0)), 0)
       : Math.max(...buckets.map((bucket) => bucket.total), 0);
-    const max = ceiling(maxTotal);
+    context.font = '10.5px "Inter", system-ui, sans-serif';
+    const max = ceiling(maxTotal, isCost() && maxTotal > 0 ? 0.000004 : 4);
+    const labels = Array.from({ length: 5 }, (_, index) => formatAxis(max * (4 - index) / 4));
+    const left = Math.max(48, Math.ceil(Math.max(...labels.map((label) => context.measureText(label).width))) + 12);
+    const span = width - left - right;
+    const slot = span / (buckets.length || 1);
     geometry = { left, right, top, bottom, slot, max };
 
-    context.font = '10.5px "Inter", system-ui, sans-serif';
     context.textBaseline = 'middle';
     context.textAlign = 'right';
 
@@ -168,7 +176,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
       context.setLineDash(index === 4 ? [] : [2, 4]);
       context.stroke();
       context.fillStyle = colors.axis;
-      context.fillText(compact(max * (4 - index) / 4), left - 10, y);
+      context.fillText(labels[index], left - 10, y);
     }
     context.setLineDash([]);
 
@@ -210,7 +218,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
       const peakVal = buckets[peakIdx].total;
       const px = left + (peakIdx + 0.5) * slot;
       const py = bottom - (peakVal / max) * plotHeight;
-      const label = translateTemplate`峰值 ${compact(peakVal)}`;
+      const label = translateTemplate`峰值 ${formatAxis(peakVal)}`;
       context.save();
       context.font = '600 10px "Inter", system-ui, sans-serif';
       const tw = context.measureText(label).width + 12;
@@ -309,8 +317,9 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
   }
 
   function drawCrosshairAndNodes(context, { left, top, bottom, slot, colors }, layers) {
-    if (selected < 0 || !buckets[selected]) return;
-    const x = left + (selected + 0.5) * slot;
+    const activeIndex = buckets.length === 1 ? 0 : selected;
+    if (activeIndex < 0 || !buckets[activeIndex]) return;
+    const x = left + (activeIndex + 0.5) * slot;
     context.save();
     const beamGrad = context.createLinearGradient(0, top, 0, bottom);
     beamGrad.addColorStop(0, 'transparent');
@@ -325,8 +334,8 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
     context.stroke();
 
     for (const { item, topPts } of layers) {
-      if ((buckets[selected].values[item.id] || 0) <= 0) continue;
-      const pt = topPts[selected];
+      if ((buckets[activeIndex].values[item.id] || 0) <= 0) continue;
+      const pt = topPts[activeIndex];
       context.beginPath();
       context.arc(pt.x, pt.y, 9, 0, Math.PI * 2);
       context.fillStyle = hexToRgba(item.color, 0.24);
@@ -431,7 +440,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
 
 
   function hit(event) {
-    if (!geometry || !buckets.some((bucket) => bucket.total > 0)) return -1;
+    if (!geometry || !series.length || !buckets.some(hasUsage)) return -1;
     const area = canvas.getBoundingClientRect();
     const { left, top, bottom, slot } = geometry;
     const x = event.clientX - area.left;
@@ -462,8 +471,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
       key.className = 'tt-key';
       const dot = document.createElement('i');
       dot.className = 'series-dot';
-      dot.style.background = item.color;
-      dot.style.color = item.color;
+      setElementStyle(dot, { color: item.color });
       const name = document.createElement('span');
       name.textContent = item.name;
       key.append(dot, name);
@@ -471,7 +479,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
       const num = document.createElement('span');
       num.className = 'tt-val';
       const pct = bucket.total ? Math.round((value / bucket.total) * 100) : 0;
-      num.textContent = `${full(value)}${active.length > 1 ? ` · ${pct}%` : ''}`;
+      num.textContent = `${formatValue(value)}${active.length > 1 ? ` · ${pct}%` : ''}`;
 
       row.append(key, num);
       tooltip.append(row);
@@ -483,11 +491,19 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
     totalKey.textContent = translateText('总计');
     const totalVal = document.createElement('span');
     totalVal.className = 'tt-val';
-    totalVal.textContent = full(bucket.total);
+    totalVal.textContent = isCost() && bucket.records > 0 && !bucket.pricedRecords ? '—' : formatValue(bucket.total);
     totalRow.append(totalKey, totalVal);
     tooltip.append(totalRow);
 
-    if (bucket.total > 0) {
+    if (isCost() && bucket.pricedRecords < bucket.records) {
+      const note = document.createElement('div');
+      note.className = 'tt-coverage';
+      const coverage = bucket.totalTokens ? bucket.pricedTokens / bucket.totalTokens : bucket.pricedRecords / bucket.records;
+      note.textContent = translateTemplate`计价覆盖 ${percent(Math.min(1, coverage))} · 含未计价记录`;
+      tooltip.append(note);
+    }
+
+    if (hasUsage(bucket)) {
       const hint = document.createElement('div');
       hint.className = 'tt-hint';
       hint.textContent = translateText('点击查看当日明细 →');
@@ -500,8 +516,7 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
     const canvasWidth = canvas.clientWidth;
     const placeRight = anchor + 16 + ttWidth <= canvasWidth;
     const leftPos = placeRight ? anchor + 16 : Math.max(4, anchor - 16 - ttWidth);
-    tooltip.style.left = `${leftPos}px`;
-    tooltip.style.top = '8px';
+    setElementStyle(tooltip, { left: `${leftPos}px`, top: '8px' });
   }
 
   function select(index) {
@@ -524,13 +539,14 @@ export function createTrend(canvas, tooltip, { compact, full, onDate }) {
   }).observe(canvas);
 
   return {
-    update(data, nextSeries, style = 'area') {
+    update(data, nextSeries, style = 'area', nextMetric = 'token') {
       buckets = data;
       series = nextSeries;
       chartStyle = style;
+      metric = nextMetric;
       selected = -1;
       tooltip.hidden = true;
-      canvas.parentElement.classList.toggle('interactive', buckets.some((bucket) => bucket.total > 0));
+      canvas.parentElement.classList.toggle('interactive', series.length > 0 && buckets.some(hasUsage));
       draw();
     },
     redraw() {

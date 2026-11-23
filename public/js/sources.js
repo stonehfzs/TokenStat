@@ -1,8 +1,38 @@
-import { t as translateText, tr as translateTemplate } from './i18n.js';
+import { locale, t as translateText, tr as translateTemplate } from './i18n.js';
 import { load } from './api.js';
-import { t } from './i18n.js';
-import { compact, providers, state, statusLabels } from './state.js';
+import { compact, dateTime, full, providers, state, statusLabels } from './state.js';
 import { byId, escapeHtml, icon, isLoading, totals } from './ui.js';
+
+const reasonLabels = {
+  invalidJson: ['JSON 语法不完整', 'Malformed JSON'],
+  invalidTimestamp: ['用量时间戳无效', 'Invalid usage timestamp'],
+  oversizedLine: ['单行超出读取限制', 'Line exceeds size limit'],
+  oversizedFile: ['文件超出读取限制', 'File exceeds size limit'],
+  unclassified: ['未识别内容或旧缓存的未知原因', 'Unrecognized or legacy log entries'],
+  missingPath: ['目录或文件不存在', 'Path not found'],
+  invalidPath: ['路径类型无效', 'Invalid path type'],
+  permissionDenied: ['权限不足', 'Permission denied'],
+  changedDuringScan: ['文件正在写入', 'File changed during scan'],
+  readError: ['读取失败', 'Read failure'],
+};
+
+function collectionDetails(source) {
+  if (source?.scannedFiles == null) return '';
+  const english = locale === 'en-US';
+  const rows = [
+    [english ? 'Last collected' : '最后成功采集', source.lastCollectedAt ? dateTime.format(new Date(source.lastCollectedAt)) : '—'],
+    [english ? 'Files read' : '已读取文件', full(source.scannedFiles)],
+    [english ? 'File or path failures' : '失败文件或路径', full(source.failedFiles)],
+    [english ? 'Skipped log entries' : '跳过条数', full(source.skippedCount)],
+  ];
+  const reasons = [...Object.entries(source.skippedReasons), ...Object.entries(source.failedReasons)];
+  return `<dl class="source-diagnostics">${rows.map(([label, value]) =>
+    `<div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>
+    ${reasons.length ? `<details class="source-diagnostic-reasons">
+      <summary>${english ? 'Collection issues' : '查看失败与跳过原因'}</summary>
+      <ul>${reasons.map(([reason, count]) => `<li>${reasonLabels[reason]?.[english ? 1 : 0] ?? (english ? 'Other issue' : '其他原因')} · ${full(count)}</li>`).join('')}</ul>
+    </details>` : ''}`;
+}
 
 function renderSources() {
   const realEntries = state.snapshot?.entries ?? [];
@@ -11,7 +41,14 @@ function renderSources() {
     const status = source?.status || (state.busy ? 'loading' : 'missing');
     const savedPath = state.snapshot?.paths[provider.id] ?? '';
     const path = state.drafts.get(provider.id) ?? savedPath;
-    const message = source?.message ? t(source.message) : (state.busy ? translateText('正在检测本机日志。') : translateText('同步后可查看检测结果。'));
+    const partial = source?.collectionState === 'partial';
+    const unavailable = source?.collectionState === 'unavailable';
+    const label = partial ? (locale === 'en-US' ? 'Partial data' : '采集不完整')
+      : unavailable ? (locale === 'en-US' ? 'No usable records' : '暂无可用记录')
+      : statusLabels[status] || translateText('待同步');
+    const message = source?.scannedFiles != null && status === 'connected'
+      ? (locale === 'en-US' ? `Collected ${full(source.count)} usage records` : `已读取 ${full(source.count)} 条用量记录`)
+      : source?.message ? translateText(source.message) : (state.busy ? translateText('正在检测本机日志。') : translateText('同步后可查看检测结果。'));
     const localEntries = realEntries.filter((e) => e.provider === provider.id && e.source !== 'import' && !/^同步 · /u.test(e.source));
     const totalTokens = totals(localEntries).total;
     const activeDays = new Set(localEntries.map((e) => e.date)).size;
@@ -23,13 +60,14 @@ function renderSources() {
           <span class="provider-badge" data-provider="${provider.id}">${icon(provider.icon)}</span>
           <div><h2>${provider.name}</h2><p>${provider.client}</p></div>
         </div>
-        <span class="chip ${status}"><i class="status-dot"></i>${statusLabels[status] || translateText('待同步')}</span>
+        <span class="chip ${partial ? 'partial' : unavailable ? 'error' : status}"><i class="status-dot"></i>${label}</span>
       </div>
       <div class="source-stats">
         <div class="source-stat"><span>已扫描 Token</span><strong>${isLoading() || (state.device && state.device !== 'local') ? '—' : compact(totalTokens)}</strong></div>
         <div class="source-stat"><span>活跃天数</span><strong>${isLoading() || (state.device && state.device !== 'local') ? '—' : translateTemplate`${activeDays} 天`}</strong></div>
       </div>
       <p class="source-status">${escapeHtml(message)}</p>
+      ${collectionDetails(source)}
       <form data-settings="${provider.id}">
         <label class="field-label" for="path-${provider.id}">自定义路径</label>
         <input class="field-input" name="path" id="path-${provider.id}" placeholder="${escapeHtml(provider.path)}" value="${escapeHtml(path)}" maxlength="4096" spellcheck="false" autocomplete="off">

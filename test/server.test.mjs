@@ -9,7 +9,7 @@ import { startServer } from '../server.mjs';
 import { openStore } from '../lib/store.mjs';
 import { usagePeriods } from '../lib/preferences.mjs';
 
-const sources = ['codex', 'gemini', 'grok', 'claude', 'gemini-cli', 'cline', 'roo'];
+const sources = ['codex', 'gemini', 'grok', 'claude', 'gemini-cli', 'cline', 'roo', 'kilo', 'opencode'];
 
 async function fixture(testContext, config = {}) {
   const root = await mkdtemp(join(tmpdir(), 'tokenstat-api-'));
@@ -55,8 +55,17 @@ test('serves nested ES modules and CSS while rejecting encoded path traversal an
   const app = await fixture(t);
   const index = await fetch(app.url);
   assert.equal(index.ok, true);
-  assert.match(index.headers.get('content-security-policy'), /frame-ancestors 'none'/);
-  assert.match(await index.text(), /TokenStat/);
+  const policy = index.headers.get('content-security-policy');
+  const html = await index.text();
+  assert.match(policy, /default-src 'self'/u);
+  assert.match(policy, /frame-ancestors 'none'/u);
+  assert.doesNotMatch(policy, /unsafe-inline/u);
+  assert.match(html, /TokenStat/u);
+  assert.doesNotMatch(html, /\sstyle\s*=|<style\b/iu);
+  for (const [, attributes, script] of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/giu)) {
+    assert.match(attributes, /\ssrc\s*=/u);
+    assert.equal(script.trim(), '');
+  }
   assert.match((await fetch(app.url + '/js/state.js')).headers.get('content-type'), /javascript/);
   assert.match((await fetch(app.url + '/css/base.css')).headers.get('content-type'), /css/);
   for (const path of ['/../package.json', '/js/%2e%2e/%2e%2e/server.mjs', '/js/%5c..%5capp.js', '/%252e%252e/server.mjs']) {
@@ -87,6 +96,36 @@ test('backup round-trips local configuration and imports with deduplication and 
   const scoped = await second.json('usage?device=local');
   assert.equal(scoped.coverage.totalTokens, 67);
   assert.equal((await second.api('usage?device=bad')).status, 400);
+});
+
+test('overview budget usage follows configured periods independently of the usage query', async (t) => {
+  const app = await fixture(t);
+  const timeZone = 'Asia/Shanghai';
+  const { day, month, monthStart } = usagePeriods({ timeZone });
+  const outside = new Date(Date.parse(monthStart + 'T00:00:00Z') - 86_400_000).toISOString().slice(0, 10);
+  const future = new Date(Date.parse(day + 'T00:00:00Z') + 86_400_000).toISOString().slice(0, 10);
+  const budgets = { dailyTokens: 100, dailyUsd: 1, monthlyTokens: 300 };
+  await app.json('preferences?timeZone=Asia%2FShanghai', { budgets });
+  const empty = await app.json('usage');
+  assert.equal(empty.budgetProgress.find(({ key }) => key === 'dailyUsd').used, 0);
+  await app.json('import', upload(day, 'today', 120));
+  await app.json('import', upload(monthStart, 'month-start', 60));
+  await app.json('import', upload(outside, 'previous-month', 900));
+  await app.json('import', upload(future, 'next-day', 1000));
+
+  const scoped = await app.json(`usage?from=${outside}&to=${outside}&timeZone=UTC&device=local`);
+  assert.equal(scoped.coverage.totalTokens, 900);
+  const dailyUsed = day === monthStart ? 180 : 120;
+  assert.deepEqual(scoped.budgetProgress, [
+    { key: 'dailyTokens', period: day, limit: 100, used: dailyUsed, unpricedRecords: 0 },
+    { key: 'dailyUsd', period: day, limit: 1, used: null, unpricedRecords: day === monthStart ? 2 : 1 },
+    { key: 'monthlyTokens', period: month, limit: 300, used: 180, unpricedRecords: 0 },
+  ]);
+
+  await app.json('pricing', { provider: 'codex', model: 'gpt-6.2-sol', input: 2, output: 10 });
+  const estimate = (await app.json('usage')).budgetProgress.find(({ key }) => key === 'dailyUsd');
+  assert.equal(estimate.unpricedRecords, 0);
+  assert.ok(Math.abs(estimate.used - 2 * dailyUsed / 1_000_000) < 1e-12);
 });
 
 test('delivers one notification per budget threshold as usage crosses 80% then 100%', async (t) => {

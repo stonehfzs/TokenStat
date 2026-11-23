@@ -45,9 +45,11 @@ function download(name, lines) {
 const csvHeader = ['date', 'provider', 'model', 'input', 'output', 'cached', 'reasoning', 'total'];
 
 function exportUsage(page) {
-  const data = page === 'daily' ? rows().filter((entry) => entry.date === state.day) : period(rows()).entries;
+  const range = page === 'daily' ? null : period(rows());
+  const data = range?.entries ?? rows().filter((entry) => entry.date === state.day);
   if (!data.length) return;
-  const label = state.demo ? 'demo' : page === 'daily' ? state.day : state.range;
+  const label = state.demo ? 'demo' : !range ? state.day : /^(?:month|last-month|custom)$/u.test(state.range)
+    ? `${range.start}_${range.end}` : state.range;
   const lines = data.map((entry) => [...csvHeader.map((property) =>
     property === 'reasoning' && entry.withoutReasoning === entry.count ? '' : entry[property]), entry.cacheWrite ?? 0]);
   download(`tokenstat-${label}.csv`, [[...csvHeader, 'cache_write'], ...lines]);

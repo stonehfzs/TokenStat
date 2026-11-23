@@ -15,6 +15,16 @@ function closeTo(actual, expected) {
   assert(Math.abs(actual - expected) < 1e-12, `Expected ${expected}, received ${actual}`);
 }
 
+function tempStore(context) {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenstat-pricing-'));
+  const db = openStore(directory);
+  context.after(() => {
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  return db;
+}
+
 test('resolves known public namespaced IDs and dated model snapshots', () => {
   assert.equal(resolveDefaultRate('publishers/google/models/gemini-2.5-pro').model, 'gemini-2.5-pro');
   assert.equal(resolveDefaultRate('anthropic/claude-opus-4.5').model, 'claude-opus-4-5');
@@ -46,31 +56,26 @@ test('preserves request-level context tiers at their exact boundaries', () => {
     (99_991 * 0.50 + 10 * 0.05 + 20 * 2.50) / 1_000_000);
 });
 
-test('uses the same resolver for SQLite tiers and fee estimates without pricing aggregate totals as requests', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'tokenstat-pricing-'));
-  const db = openStore(directory);
-  try {
-    const model = 'models/gemini-2.5-pro';
-    const date = '2026-11-22T03:00:00.000Z';
-    const records = [
-      { ...usage(model, { provider: 'gemini', input: 200_000, requestLevel: true }), id: 'event-1', date, source: 'import' },
-      { ...usage(model, { provider: 'gemini', input: 200_001, requestLevel: true }), id: 'event-2', date, source: 'import' },
-      { ...usage(model, { provider: 'gemini', input: 900_000 }), id: 'event-3', date, source: 'import' },
-    ];
-    db.importBatch('fixtures.json', records);
-    const [row] = estimateRows(db.readUsage('Asia/Shanghai'));
-    assert.equal(row.model, model);
-    assert.equal(row.shortRequests, 1);
-    assert.equal(row.longRequests, 1);
-    assert.equal(row.unclassifiedRecords, 1);
-    assert.equal(row.pricedRecords, 2);
-    assert.equal(row.pricedTokens, records[0].total + records[1].total);
-    closeTo(row.estimatedCost, estimateRows(records).reduce((sum, event) => sum + (event.estimatedCost ?? 0), 0));
-    assert.equal(estimateTotals([row]).coverage.records, 3);
-  } finally {
-    db.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
+test('uses the same resolver for SQLite tiers and fee estimates without pricing aggregate totals as requests', (context) => {
+  const db = tempStore(context);
+  const model = 'models/gemini-2.5-pro';
+  const date = '2026-11-22T03:00:00.000Z';
+  const records = [
+    { ...usage(model, { provider: 'gemini', input: 200_000, requestLevel: true }), id: 'event-1', date, source: 'import' },
+    { ...usage(model, { provider: 'gemini', input: 200_001, requestLevel: true }), id: 'event-2', date, source: 'import' },
+    { ...usage(model, { provider: 'gemini', input: 900_000 }), id: 'event-3', date, source: 'import' },
+  ];
+  db.importBatch('fixtures.json', records);
+  const [row] = estimateRows(db.readUsage('Asia/Shanghai'));
+  assert.equal(row.model, model);
+  assert.equal(row.shortRequests, 1);
+  assert.equal(row.longRequests, 1);
+  assert.equal(row.unclassifiedRecords, 1);
+  assert.equal(row.pricedRecords, 2);
+  assert.equal(row.pricedTokens, records[0].total + records[1].total);
+  assert.deepEqual(row.unpricedReasons, { unknownRequestTier: { records: 1, tokens: records[2].total } });
+  closeTo(row.estimatedCost, estimateRows(records).reduce((sum, event) => sum + (event.estimatedCost ?? 0), 0));
+  assert.equal(estimateTotals([row]).coverage.records, 3);
 });
 
 test('preserves exact custom overrides and avoids charging reasoning twice', () => {
@@ -93,8 +98,69 @@ test('keeps source-reported charges separate from API equivalents', () => {
     usage('grok-4.7-build', { provider: 'grok', reportedCostTicks: 123_000_000, reportedCostRecords: 1 }),
   ]);
   assert.equal(rows[1].estimatedCost, null);
+  assert.deepEqual(rows[1].unpricedReasons, { missingModelRate: { records: 1, tokens: 120 } });
   const totals = estimateTotals(rows);
   closeTo(totals.estimatedCost, (90 * 4 + 10 * 0.20 + 20 * 20) / 1_000_000);
   closeTo(totals.reportedCostUsd, 0.0123);
   assert.deepEqual(totals.reportedCostCoverage, { reportedRecords: 1, records: 2 });
+  assert.deepEqual(totals.unpricedReasons, rows[1].unpricedReasons);
+});
+
+test('flat rates price eligible siblings while incompatible per-record totals remain excluded', (context) => {
+  const db = tempStore(context);
+  const model = 'claude-opus-5-5';
+  const records = [
+    usage(model, { provider: 'claude' }),
+    usage(model, { provider: 'claude', cacheWrite: 15 }),
+    usage(model, { provider: 'claude', total: 119 }),
+    usage(model, { provider: 'claude', total: 121 }),
+  ].map((row, index) => ({ ...row, id: 'flat-' + index, date: '2026-11-23T03:00:00.000Z', source: 'import' }));
+  db.importBatch('fixture.json', records);
+  const raw = db.readUsage('Asia/Shanghai');
+  assert.deepEqual(db.readUsage('Asia/Shanghai'), raw);
+  const [row] = estimateRows(raw);
+  assert.equal(row.input + row.output, row.total);
+  assert.equal(row.count, 4);
+  assert.equal(row.pricedRecords, 1);
+  assert.equal(row.pricedTokens, 120);
+  assert.deepEqual(row.unpricedReasons, {
+    incompatibleTokenBreakdown: { records: 2, tokens: 240 },
+    missingCacheWriteRate: { records: 1, tokens: 120 },
+  });
+  closeTo(row.estimatedCost, estimateRows([records[0]])[0].estimatedCost);
+});
+
+test('daily and weekly groups keep exact overrides and separate cache and reasoning failures', (context) => {
+  const db = tempStore(context);
+  const model = 'gpt-6.2-sol';
+  const exact = normalizeRate({ provider: 'codex', model, input: 2, output: 10, reasoning: 20 }, ['codex']);
+  const records = [
+    usage(model, { cached: 0 }),
+    usage(model, { cached: 0, input: 280_000, requestLevel: true }),
+    usage(model, { cached: 12, requestLevel: true }),
+    usage(model, { cached: 0, cacheWrite: 20, requestLevel: true }),
+    usage(model, { cached: 0, reasoning: 0, reasoningKnown: false, requestLevel: true }),
+  ].map((row, index) => ({
+    ...row, id: 'tier-' + index, source: 'import',
+    date: index % 2 ? '2026-11-23T03:00:00.000Z' : '2026-11-24T03:00:00.000Z',
+  }));
+  db.importBatch('fixture.json', records);
+  const direct = estimateTotals(estimateRows(records, [exact]));
+  const daily = estimateTotals(estimateRows(db.readUsage('Asia/Shanghai', { device: 'local' }), [exact]));
+  const [weekly] = estimateRows(db.readUsage('Asia/Shanghai', { granularity: 'week' }), [exact]);
+  assert.equal(weekly.date, '2026-11-23');
+  const reasons = {
+    missingCacheReadRate: { records: 1, tokens: 120 },
+    missingCacheWriteRate: { records: 1, tokens: 120 },
+    missingReasoningBreakdown: { records: 1, tokens: 120 },
+  };
+  for (const summary of [direct, daily, weekly]) {
+    assert.deepEqual(summary.unpricedReasons, reasons);
+    assert.equal(summary.pricedRecords, 2);
+    assert.equal(summary.shortRequests, 0);
+    assert.equal(summary.longRequests, 0);
+    assert.equal(summary.unclassifiedRecords, 0);
+    closeTo(summary.estimatedCost, direct.estimatedCost);
+  }
+  assert.deepEqual(daily.coverage, direct.coverage);
 });

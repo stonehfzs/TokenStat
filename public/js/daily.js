@@ -1,5 +1,6 @@
-import { t as translateText, tr as translateTemplate } from './i18n.js';
+import { locale, t as translateText, tr as translateTemplate } from './i18n.js';
 import { request } from './api.js';
+import { unpricedDetails } from './pricing-display.js';
 import { clockTime, dateMillis, full, offsetDay, oneDay, percent, providerById, relativeDayTag, rows, state, timeZone, today, money } from './state.js';
 import { applyDynamicStyles, byId, escapeHtml, get, isLoading, isReviewRoute, tableEmpty, toolList, totals } from './ui.js';
 import { providerRows } from './usage-table.js';
@@ -171,12 +172,18 @@ function paintDayInsights(details, unavailable = translateText('正在读取当�
   const coverage = details?.coverage;
   const tiered = details?.shortRequests || details?.longRequests
     ? translateTemplate`短上下文 ${full(details.shortRequests)} 次 · 长上下文 ${full(details.longRequests)} 次` : '';
-  const unclassified = details?.unclassifiedRecords
-    ? translateTemplate`${full(details.unclassifiedRecords)} 条记录缺少单次请求用量` : '';
+  const collectionIssue = (!state.device || state.device === 'local') && state.snapshot?.sources?.some((source) =>
+    source.collectionState === 'partial' || source.collectionState === 'unavailable');
+  const noUsage = collectionIssue
+    ? (locale === 'en-US' ? 'No collected usage. Check the status under Sources.' : '当天暂无已采集用量，可在「来源」检查采集状态。')
+    : translateText('当天暂无用量。');
   byId('pricing-coverage').textContent = !coverage ? unavailable :
-    coverage.totalTokens === 0 ? translateText('当天暂无用量。') :
+    coverage.totalTokens === 0 ? noUsage :
       [coverage.pricedTokens ? translateTemplate`覆盖 ${percent.format(coverage.pricedTokens / coverage.totalTokens)} 的 Token` : translateText('当天用量尚无可用估算'),
-        tiered, unclassified].filter(Boolean).join(' · ');
+        tiered].filter(Boolean).join(' · ');
+  const unpriced = byId('pricing-unpriced');
+  const reasons = unpricedDetails(details?.unpricedReasons);
+  if (unpriced.innerHTML !== reasons) unpriced.innerHTML = reasons;
   const breakdown = details?.costBreakdown;
   byId('cost-breakdown').hidden = breakdown == null;
   const categories = { freshInput: translateText('普通输入'), cachedInput: translateText('缓存读取'), cacheWrite: translateText('缓存写入'), output: translateText('其余输出'), reasoning: translateText('已记录的推理') };
@@ -184,14 +191,20 @@ function paintDayInsights(details, unavailable = translateText('正在读取当�
     `<div><dt>${label}</dt><dd>${money.format(breakdown[key])}</dd></div>`).join('') : '';
 
   const sessions = details?.sessions ?? [];
-  byId('session-table').innerHTML = sessions.length ? sessions.map(({ provider, session, startedAt, endedAt, total: tokens }) => {
+  byId('session-table').innerHTML = sessions.length ? sessions.map((item) => {
+    const { provider, session, startedAt, endedAt, total: tokens, input, cacheHitRate, estimatedCost, pricedRecords, count } = item;
     const label = providerById.get(provider)?.name ?? provider;
     const time = startedAt && endedAt
       ? `${clockTime.format(new Date(startedAt))} – ${clockTime.format(new Date(endedAt))}`
       : '—';
+    const lowCache = input >= 100_000 && cacheHitRate != null && cacheHitRate < 0.1;
+    const cache = cacheHitRate == null ? '—' : percent.format(cacheHitRate);
+    const cost = estimatedCost == null ? '—' : money.format(estimatedCost);
     return `<tr><td>${escapeHtml(label)}</td><td><code title="${escapeHtml(session)}">${escapeHtml(session.slice(0, 12))}</code></td>
-      <td>${time}</td><td class="numeric total">${full(tokens)}</td></tr>`;
-  }).join('') : tableEmpty(details ? translateText('当天暂无可识别的会话。') : unavailable, 4);
+      <td>${time}</td><td class="numeric total">${full(tokens)}</td>
+      <td class="numeric">${cache}${lowCache ? ` <span class="session-cache-badge">${translateText('低缓存')}</span>` : ''}</td>
+      <td class="numeric price-cell">${cost}${estimatedCost != null && pricedRecords < count ? `<small>${translateText('仅含已计价用量')}</small>` : ''}</td></tr>`;
+  }).join('') : tableEmpty(details ? translateText('当天暂无可识别的会话。') : unavailable, 6);
   applyDynamicStyles();
 }
 

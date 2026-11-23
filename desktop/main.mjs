@@ -264,7 +264,10 @@ if (app.requestSingleInstanceLock({ loginArgument })) {
     void backend.finished.catch((error) => { if (!quitting) showStartupError(error); });
     installPreferencesHandlers();
     installTray();
-    void getAutostart().catch((error) => console.error('[TokenStat] Unable to read startup settings:', error.message));
+    const pathRepair = loginLaunch ? Promise.resolve() : autostart.repairPath().catch((error) => {
+      console.error('[TokenStat] Unable to update startup path:', error.message);
+    });
+    void pathRepair.then(getAutostart).catch((error) => console.error('[TokenStat] Unable to read startup settings:', error.message));
     if (showRequested || !loginLaunch || !tray) await openWindow();
   }).catch(showStartupError);
 } else {

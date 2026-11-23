@@ -48,6 +48,12 @@
 .source-stat span { display: block; font-size: 11px; color: var(--text-3); }
 .source-stat strong { display: block; margin-top: 3px; font-size: 18px; font-weight: 720; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .source-status { min-height: 40px; font-size: 12px; color: var(--text-2); margin: 14px 0 16px; line-height: 1.55; overflow-wrap: anywhere; }
+.source-diagnostics { margin: 0 0 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 11px; color: var(--text-2); }
+.source-diagnostics dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; color: var(--text); }
+.source-diagnostic-reasons { margin: 0 0 12px; color: var(--text-2); font-size: 11px; }
+.source-diagnostic-reasons summary { cursor: pointer; }
+.source-diagnostic-reasons ul { padding-inline-start: 16px; margin: 5px 0 0; }
+.chip.partial .status-dot { background: var(--warn); }
 .source-card form { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
 .field-label { font-size: 11.5px; font-weight: 580; color: var(--text-2); }
 .field-input {
@@ -121,6 +127,11 @@
 .cost-metrics dd { margin: 5px 0 0; font: 680 clamp(24px, 2.6vw, 34px) var(--font-mono); font-variant-numeric: tabular-nums; }
 #pricing-coverage { margin: 0 24px 17px; }
 .price-cell small { display: block; margin-top: 3px; color: var(--text-3); font-size: 10.5px; }
+#pricing-unpriced:not(:empty) { margin: 0 24px 14px; }
+.unpriced-details { font-size: 12px; color: var(--text-2); white-space: normal; }
+.unpriced-details summary { cursor: pointer; }
+.unpriced-details ul { list-style: none; margin: 5px 0 0; padding: 0; display: grid; gap: 4px; }
+.price-cell .unpriced-details { min-width: 132px; max-width: 255px; margin-top: 4px; font-size: 11px; }
 .cost-breakdown { margin: 0 24px 16px; color: var(--text-2); font-size: 12px; }
 .cost-breakdown summary { cursor: pointer; }
 .cost-breakdown dl { margin: 8px 0 0; }
@@ -144,10 +155,12 @@
 [data-provider="gemini-cli"] { --extra-provider: var(--c-gemini-cli, #818cf8); }
 [data-provider="cline"] { --extra-provider: var(--c-cline, #f472b6); }
 [data-provider="roo"] { --extra-provider: var(--c-roo, #fb923c); }
-[data-provider]:is([data-provider="gemini-cli"], [data-provider="cline"], [data-provider="roo"]) :is(.series-dot),
-:is(.provider-badge, .comp-seg, .dist-fill):is([data-provider="gemini-cli"], [data-provider="cline"], [data-provider="roo"]) { color: var(--extra-provider); }
-.share-fill:is([data-provider="gemini-cli"], [data-provider="cline"], [data-provider="roo"]) { background: var(--extra-provider); }
-[data-theme="light"] { --c-gemini-cli: #4f46e5; --c-cline: #be185d; --c-roo: #c2410c; }
+[data-provider="kilo"] { --extra-provider: var(--c-kilo, #e9cd56); }
+[data-provider="opencode"] { --extra-provider: var(--c-opencode, #47d1a0); }
+[data-provider]:is([data-provider="gemini-cli"], [data-provider="cline"], [data-provider="roo"], [data-provider="kilo"], [data-provider="opencode"]) .series-dot,
+:is(.provider-badge, .comp-seg, .dist-fill):is([data-provider="gemini-cli"], [data-provider="cline"], [data-provider="roo"], [data-provider="kilo"], [data-provider="opencode"]) { color: var(--extra-provider); }
+:is(.share-fill, .lb-bar-fill):is([data-provider="gemini-cli"], [data-provider="cline"], [data-provider="roo"], [data-provider="kilo"], [data-provider="opencode"]) { background: var(--extra-provider); }
+[data-theme="light"] { --c-gemini-cli: #4f46e5; --c-cline: #be185d; --c-roo: #c2410c; --c-kilo: #8a650c; --c-opencode: #067a56; }
 @media (max-width: 760px) {
   .price-fields { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); }
   .price-identity { grid-template-columns: 1fr; }

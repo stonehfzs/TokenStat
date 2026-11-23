@@ -1,5 +1,6 @@
 import { tr as translateTemplate, t as translateText } from './i18n.js';
 import { fields, full, percent, state, money } from './state.js';
+import { unpricedDetails } from './pricing-display.js';
 import { addUsage, emptyStats, escapeHtml, icon, isLoading, isReviewRoute, providerName, sourceChip, sourceLabel, tableEmpty, totals } from './ui.js';
 
 function groupByModel(entries) {
@@ -35,7 +36,7 @@ function costCell(row) {
   const coverage = row.estimatedCost != null && row.pricedTokens < row.total
     ? translateTemplate`<small>覆盖 ${percent.format(row.pricedTokens / row.total)}</small>` : '';
   const reported = row.reportedCostUsd == null ? '' : translateTemplate`<small>日志记录 ${money.format(row.reportedCostUsd)}</small>`;
-  return `<td class="numeric price-cell">${estimated}${coverage}${reported}</td>`;
+  return `<td class="numeric price-cell">${estimated}${coverage}${reported}${unpricedDetails(row.unpricedReasons)}</td>`;
 }
 
 function providerRows(tools, entries, isDaily, query = '') {

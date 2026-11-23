@@ -2,6 +2,7 @@ import { t as translateText } from './js/i18n.js';
 import { bindApi, connectEvents, load } from './js/api.js';
 import { bindCmd, closeCommandPalette, openCommandPalette } from './js/cmd.js';
 import { bindDaily, dateBounds, renderDaily, resetDayDetails, selectDay, updateDay } from './js/daily.js';
+import { setElementStyle } from './js/dynamic-style.js';
 import { bindImport, renderImportPills, renderImports } from './js/import.js';
 import { bindOverview, renderOverview } from './js/overview.js';
 import { bindDevices, renderDevices } from './js/devices.js';
@@ -11,6 +12,9 @@ import { bindSources, installDesktopPreferences, renderSources } from './js/sour
 import { dateMillis, offsetDay, pageNames, pageOrder, reducedMotion, rows, state, timeZone } from './js/state.js';
 import { bindSync, readSyncInfo, showPairingKey } from './js/sync.js';
 import { byId, get, hydrateStaticIcons, svgMarkup, syncAllGliders } from './js/ui.js';
+import { bindVisualEffects } from './js/visual-effects.js';
+
+const syncVisualEffects = bindVisualEffects();
 
 function initTheme() {
   let saved = 'dark';
@@ -45,6 +49,7 @@ function updateLiveStatus() {
 }
 
 function render() {
+  if (state.preferences) syncVisualEffects(state.preferences.visualEffects);
   updateLiveStatus();
   renderDevices();
 
@@ -83,6 +88,14 @@ function navigate(scroll = true, instantGlider = false) {
   if (page === 'sources' && date === 'pricing') {
     byId('pricing-card').open = true;
     requestAnimationFrame(() => byId('pricing-card').scrollIntoView({ block: 'start' }));
+  }
+  if (page === 'sources' && date === 'budget') {
+    const panel = byId('preferences-card');
+    panel.open = true;
+    requestAnimationFrame(() => {
+      panel.scrollIntoView({ block: 'start' });
+      panel.querySelector('summary').focus({ preventScroll: true });
+    });
   }
   if (page === 'sources' && date === 'sync') {
     byId('sync-card').open = true;
@@ -146,12 +159,11 @@ document.addEventListener('pointerdown', (event) => {
   const size = Math.max(rect.width, rect.height);
   const wave = document.createElement('span');
   wave.className = 'ripple';
-  wave.style.width = `${size}px`;
-  wave.style.height = `${size}px`;
-  wave.style.left = `${event.clientX - rect.left - size / 2}px`;
-  wave.style.top = `${event.clientY - rect.top - size / 2}px`;
   target.append(wave);
+  setElementStyle(wave, { width: `${size}px`, height: `${size}px`,
+    left: `${event.clientX - rect.left - size / 2}px`, top: `${event.clientY - rect.top - size / 2}px` });
   wave.addEventListener('animationend', () => wave.remove(), { once: true });
+  wave.addEventListener('animationcancel', () => wave.remove(), { once: true });
 }, { passive: true });
 
 bindApi({ render, resetDayDetails, updateLiveStatus, readSyncInfo });
@@ -162,7 +174,7 @@ bindSources();
 bindSync();
 bindImport();
 bindPricing();
-bindPreferences();
+bindPreferences(syncVisualEffects);
 bindDevices();
 initTheme();
 hydrateStaticIcons();

@@ -1,6 +1,7 @@
 import { t as translateText } from './i18n.js';
 import { fields, percent, providers, state } from './state.js';
 import { t } from './i18n.js';
+import { setElementStyle } from './dynamic-style.js';
 
 const byId = (id) => document.getElementById(id);
 
@@ -38,7 +39,7 @@ const svgMarkup = (name) => `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const icon = (name) => `<span data-icon="${name}">${svgMarkup(name)}</span>`;
 
 const emptyStats = () => ({ input: 0, output: 0, cached: 0, reasoning: 0, total: 0, count: 0, withoutReasoning: 0,
-  estimatedCost: null, reportedCostUsd: null, pricedTokens: 0 });
+  estimatedCost: null, reportedCostUsd: null, pricedTokens: 0, unpricedReasons: {} });
 
 const tableEmpty = (message, columns) => `<tr><td colspan="${columns}" class="empty-table">${message}</td></tr>`;
 
@@ -61,14 +62,15 @@ function syncGlider(container, activeSelector, instant = false) {
     new ResizeObserver(() => syncGlider(container, activeSelector, true)).observe(container);
   }
   if (!active || active.offsetWidth === 0) {
-    glider.style.opacity = '0';
+    setElementStyle(glider, { opacity: '0' });
     return;
   }
   if (instant) glider.classList.add('no-transition');
   else glider.classList.remove('no-transition');
-  glider.style.opacity = '1';
-  glider.style.width = `${active.offsetWidth}px`;
-  glider.style.transform = `translateX(${active.offsetLeft}px)`;
+  setElementStyle(glider, {
+    opacity: '1', width: `${active.offsetWidth}px`, height: `${active.offsetHeight}px`,
+    transform: `translate(${active.offsetLeft}px, ${active.offsetTop}px)`,
+  });
   if (instant) {
     glider.getBoundingClientRect();
     glider.classList.remove('no-transition');
@@ -80,6 +82,7 @@ function syncAllGliders(instant = false) {
   syncGlider(byId('range-controls'), 'button[aria-pressed="true"]', instant);
   syncGlider(byId('chart-style-controls'), 'button[aria-pressed="true"]', instant);
   syncGlider(byId('trend-mode-controls'), 'button[aria-pressed="true"]', instant);
+  syncGlider(byId('trend-metric-controls'), 'button[aria-pressed="true"]', instant);
 }
 
 function getColorVar(cssVar, fallback) {
@@ -97,18 +100,18 @@ function hydrateStaticIcons() {
 function applyDynamicStyles() {
   for (const el of get('[data-bar-pct]')) {
     const pct = Number(el.dataset.barPct);
-    el.style.width = `${Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0))}%`;
+    setElementStyle(el, { width: `${Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0))}%` });
   }
   for (const el of get('[data-bar-h]')) {
     const pct = Number(el.dataset.barH);
-    el.style.height = `${Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0))}%`;
+    setElementStyle(el, { height: `${Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0))}%` });
   }
   for (const el of get('[data-ring-pct]')) {
     const r = 18;
     const circ = 2 * Math.PI * r;
     const pct = Math.max(0, Math.min(1, Number(el.dataset.ringPct) || 0));
-    el.style.strokeDasharray = `${circ.toFixed(2)}`;
-    el.style.strokeDashoffset = `${(circ * (1 - pct)).toFixed(2)}`;
+    el.setAttribute('stroke-dasharray', circ.toFixed(2));
+    el.setAttribute('stroke-dashoffset', (circ * (1 - pct)).toFixed(2));
   }
 }
 
@@ -131,6 +134,11 @@ function addUsage(sum, entry) {
   sum.count += entry.count;
   sum.withoutReasoning += entry.withoutReasoning ?? 0;
   sum.pricedTokens += entry.pricedTokens ?? 0;
+  for (const [reason, { records, tokens }] of Object.entries(entry.unpricedReasons ?? {})) {
+    const bucket = sum.unpricedReasons[reason] ??= { records: 0, tokens: 0 };
+    bucket.records += records;
+    bucket.tokens += tokens;
+  }
   if (entry.estimatedCost != null) sum.estimatedCost = (sum.estimatedCost ?? 0) + entry.estimatedCost;
   if (entry.reportedCostUsd != null) sum.reportedCostUsd = (sum.reportedCostUsd ?? 0) + entry.reportedCostUsd;
 }
